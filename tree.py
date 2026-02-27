@@ -12,7 +12,7 @@ class Tree():
     Essentialy, the tree is a node with 2 descendents in case of an internal node and a prediction vector if its a leaf
     """
 
-    def __init__(self,conjunctions, splitting_values,max_depth):
+    def __init__(self,conjunctions, splitting_values,max_depth, feature=None):
         """
         :param conjunctions: A list of conjunctions
         :param splitting_values: A dictionary in ehich keys are features and values are splitting values ordered by frequency
@@ -22,6 +22,10 @@ class Tree():
         self.conjunctions = conjunctions
         self.splitting_values = splitting_values
         self.max_depth = max_depth
+        # Additional Attributed for ShapeCART Adjustments
+        self.feature = feature
+        self.bucket_assignment = None # this will be set later on during coordinate descent. (in predict if sel.dir not none retunr dir)
+        self.leaf_idx = None 
 
     def split(self):
         # 1. Spliting is stopped if:

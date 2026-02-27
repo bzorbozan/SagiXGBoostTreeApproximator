@@ -115,6 +115,146 @@ class FBT():
         return processed_paths
 
     #######################################################################
+    # SHAPECART RELATED ADJUSTMENTS
+
+    def _get_all_leaves(self, node):
+        """Helper: recursively collect all leaf nodes"""
+        if node.selected_feature is None:  # Is leaf
+            return [node]
+        
+        leaves = []
+        if node.left:
+            leaves.extend(self._get_all_leaves(node.left))
+        if node.right:
+            leaves.extend(self._get_all_leaves(node.right))
+        return leaves
+    
+    def map_to_buckets(self, k=2):
+        """"
+        Implemented for 2 buckets only for now. Will be updated in the future for k-buckets
+        """
+         # Get all leaves from the tree
+        leaves = self._get_all_leaves(self.tree)
+        
+        # Prepare data
+        leaf_distributions = []
+        leaf_samples = []
+        leaf_nodes = []
+        
+        for leaf_idx, leaf in enumerate(leaves):
+            probas = np.array([softmax(c.label_probas) for c in leaf.conjunctions]).mean(axis=0).flatten()
+            print(f"Leaf {leaf_idx}: probas shape = {probas.shape}")
+            leaf_distributions.append(probas)
+            leaf_samples.append(len(leaf.conjunctions))
+            leaf_nodes.append(leaf_idx)
+        
+        leaf_distributions = np.array(leaf_distributions)
+        leaf_samples = np.array(leaf_samples)
+        leaf_nodes = np.array(leaf_nodes)
+
+        # Run coordinate descent (assuming you have bucketer object)
+        result = self.coordinate_descent(
+            k_=k,
+            leaf_distributions=leaf_distributions,
+            leaf_samples=leaf_samples,
+            leaf_nodes=leaf_nodes,
+            leaf_sides=None
+        )
+        
+        # Store results
+        bucket_assignments = result['mapping']
+        
+        # Assign buckets back to leaves
+        for leaf_idx, leaf in enumerate(leaves):
+            leaf.leaf_idx = leaf_idx
+            leaf.bucket_assignment = bucket_assignments[leaf_idx]
+        
+        return result
+
+    def coordinate_descent(self, k_, leaf_distributions, leaf_samples, leaf_nodes, leaf_sides=None):
+
+        # run the kmeans algorithm but catch convergence warnings and raise an exception
+        if self.smart_init:
+            with warnings.catch_warnings():
+                warnings.filterwarnings('error')
+                try:
+                    kmeans = KMeans(n_clusters=k_, copy_x=False)
+                    kmeans.fit(leaf_distributions, sample_weight=leaf_samples)
+                    assignments = kmeans.labels_
+                except Warning:
+                    # this means that the # of distinct points is less than k_, we can fallback to random init
+                    assignments = np.random.randint(0, k_, size=len(leaf_nodes))
+        else:
+            assignments = np.random.randint(0, k_, size=len(leaf_nodes))
+        leaf_weighted_dists = leaf_distributions * leaf_samples[:, np.newaxis]
+
+        partition_weighted_distributions = np.zeros((k_, leaf_distributions.shape[1]), dtype=np.float64)
+        for i in range(k_):
+            mask = assignments == i
+            weighted_distributions = leaf_weighted_dists[mask]
+            partition_weighted_distribution = np.sum(weighted_distributions, axis = 0)
+            partition_weighted_distributions[i] = partition_weighted_distribution
+
+        leaf_side_partition_weighted_distributions = np.zeros((k_, leaf_distributions.shape[1]), dtype=np.float64)
+        if leaf_sides is not None:
+            for i in range(k_):
+                mask = leaf_sides == i
+                weighted_distributions = leaf_weighted_dists[mask]
+                partition_weighted_distribution = np.sum(weighted_distributions, axis = 0)
+                leaf_side_partition_weighted_distributions[i] += partition_weighted_distribution
+
+        assignments, partition_weighted_distributions, total_impurity = run_descent(
+            len(leaf_nodes),
+            assignments,
+            leaf_weighted_dists,
+            partition_weighted_distributions,
+            k_,
+            self.criterion_flag, 
+            max_iter=self.max_iter, 
+            seed = self.random_state, 
+            leaf_sides=leaf_sides,
+            leaf_side_partition_weighted_distributions=leaf_side_partition_weighted_distributions
+        )
+        mapping = np.zeros(leaf_nodes.max() + 1, dtype=np.int32)
+        for i in range(len(leaf_nodes)):
+            mapping[leaf_nodes[i]] = assignments[i]
+
+        # calculate the initial impurity here
+        initial_impurity = calculate_total_impurity( np.sum(leaf_weighted_dists, axis=0, keepdims=True), self.criterion_flag) 
+        
+        impurities = {}
+        impurities = {k_val: self.calculate_impurity(partition_weighted_distributions[k_val], weighted = True) for k_val in range(partition_weighted_distributions.shape[0])}
+        partition_weights = [np.sum(partition_weighted_distributions[part_]) for part_ in range(k_)]
+        impurity_decrease = initial_impurity - total_impurity
+        return {
+            'weighted_distributions': partition_weighted_distributions,
+            'impurities': impurities,
+            'impurity': total_impurity,
+            'partition_weights': partition_weights,
+            'impurity_decrease': impurity_decrease,
+            'mapping': mapping,
+        }
+
+    def calculate_impurity(self, distribution, weighted = False):
+        if weighted:
+            if np.sum(distribution) == 0:
+                return 0
+            distribution = distribution / np.sum(distribution)
+        
+        if self.criterion == 'gini': # this used to be an attribute in the BranchingTree class in SGTLearn Repo
+            return 1 - np.sum(distribution**2)
+        elif self.criterion == 'entropy':
+            impurity = 0
+            for p in distribution:
+                if p > 0:
+                    impurity -= p * np.log2(p)
+            return impurity
+        else:
+            raise ValueError('Criterion must be either gini or entropy')
+
+    #######################################################################
+
+    #######################################################################
     #The following functions are only relevant for the experiment
     # They should be excluded from the documentation of the package
     ########################################################################
@@ -179,4 +319,121 @@ class FBT():
             probas.append(softmax(np.array(proba).sum(axis=0)))
         return np.array([i[0] for i in probas]), depths
 
+#######################################################################
+# SHAPECART RELATED ADJUSTMENTS
+def calculate_total_impurity(weighted_dist: np.ndarray, criterion_flag: int) -> float:
+    """
+    weighted_dist: 2D array of shape (n_partitions, n_classes)
+                    each row i is the count-vector for partition i.
+    criterion_flag: 0 for Gini, 1 for entropy
+    """
+    imp = 0.0
+    total = 0.0
+    n_parts, n_classes = weighted_dist.shape
 
+    for i in range(n_parts):
+        # 1) compute sum of counts for this partition
+        s = 0.0
+        for j in range(n_classes):
+            s += weighted_dist[i, j]
+        if s == 0.0:
+            continue
+
+        if criterion_flag == 0:
+            # Gini: sum * (1 - sum_k (p_k^2))
+            dot = 0.0
+            for j in range(n_classes):
+                p = weighted_dist[i, j] / s
+                dot += p * p
+            imp += s * (1.0 - dot)
+        else:
+            # Entropy: - sum * sum_k (p_k * log2 p_k)
+            e = 0.0
+            for j in range(n_classes):
+                p = weighted_dist[i, j] / s
+                if p > 0.0:
+                    e += p * np.log2(p)
+            imp -= s * e
+
+        total += s
+
+    if total == 0.0:
+        return 0.0
+    return imp / total
+
+def run_descent(n_leaf_nodes: int,
+                assignments: np.ndarray, # assignments from kmeans
+                leaf_weighted_dists: np.ndarray, # leaf_weights
+                partition_weighted_distributions: np.ndarray, # left/right weighted dists from kmeans
+                k_: int,
+                criterion_flag: int,
+                max_iter: int = 10,
+                seed: int = 42,
+                leaf_sides: np.ndarray = None, # assignments from root split
+                leaf_side_partition_weighted_distributions: np.ndarray = None # left/right weighted dists from root 
+                ):
+    counter = 0
+    total_impurity = calculate_total_impurity(
+        partition_weighted_distributions, criterion_flag=criterion_flag
+    )
+    if leaf_sides is not None: # if we have leaf sides, check if they are better. if yes, use them as init
+        leaf_sides_total_impurity = calculate_total_impurity(
+            leaf_side_partition_weighted_distributions, criterion_flag=criterion_flag
+        )
+        if leaf_sides_total_impurity < total_impurity:
+            total_impurity = leaf_sides_total_impurity
+            assignments = leaf_sides.copy()
+            partition_weighted_distributions = leaf_side_partition_weighted_distributions.copy()
+        else:
+            leaf_sides_total_impurity = np.inf
+
+    old_total_impurity = total_impurity
+    best_impurity = total_impurity
+    if max_iter == 0:
+        return assignments, partition_weighted_distributions, total_impurity
+    rng = np.random.default_rng(seed)
+    for _ in range(max_iter):
+        leaves = rng.permutation(n_leaf_nodes)
+        switched = False
+        for leaf in leaves:
+            curr_assignment = assignments[leaf]
+            contr = leaf_weighted_dists[leaf]
+            
+            # Temporarily remove contribution of current leaf
+            partition_weighted_distributions[curr_assignment] -= contr
+            
+            best_assignment = curr_assignment
+            
+            for k_val in range(k_):
+                if k_val == curr_assignment: # skip the current assignment as this is the best impurity
+                    continue
+                # Temporarily add leaf's contribution to new candidate partition
+                partition_weighted_distributions[k_val] += contr
+                
+                # Compute impurity only if candidate partition is changed
+                new_impurity = calculate_total_impurity(partition_weighted_distributions, criterion_flag=criterion_flag)
+                
+                if new_impurity < best_impurity:
+                    best_impurity = new_impurity
+                    best_assignment = k_val
+                    switched = True
+                
+                # Restore partition distribution
+                partition_weighted_distributions[k_val] -= contr
+            
+            # Permanently assign the leaf to the best partition
+            assignments[leaf] = best_assignment
+            partition_weighted_distributions[best_assignment] += contr
+            total_impurity = best_impurity  # Update total_impurity directly
+        assert total_impurity <= old_total_impurity, f'Total impurity increased: {total_impurity} > {old_total_impurity}'
+        if not switched:
+            counter += 1
+        else:
+            counter = 0
+        
+        if counter > 5:
+            break
+
+    return assignments, partition_weighted_distributions, total_impurity
+
+#######################################################################
