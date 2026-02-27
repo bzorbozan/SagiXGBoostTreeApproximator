@@ -8,6 +8,10 @@ from conjunctionset import *
 from tree import *
 from pruning import *
 
+# New imports
+import warnings
+from sklearn.cluster import KMeans
+
 class FBT():
     """
     This class creates a decision tree from an XGboost
@@ -25,6 +29,13 @@ class FBT():
         self.max_number_of_conjunctions = max_number_of_conjunctions
         self.pruning_method = pruning_method
         self.max_depth = max_depth
+
+        # Coordinate Descent Attributes (default vals not part of initialization for now)
+        self.criterion = 'entropy'
+        self.criterion_flag = 1 if self.criterion == 'entropy' else 0
+        self.smart_init = True
+        self.max_iter = 10
+        self.random_state = 42
 
     def fit(self,train,feature_cols,label_col, xgb_model, pruned_forest=None, trees_conjunctions_total=None):
         """
@@ -143,7 +154,7 @@ class FBT():
         
         for leaf_idx, leaf in enumerate(leaves):
             probas = np.array([softmax(c.label_probas) for c in leaf.conjunctions]).mean(axis=0).flatten()
-            print(f"Leaf {leaf_idx}: probas shape = {probas.shape}")
+            # print(f"Leaf {leaf_idx}: probas shape = {probas.shape}")
             leaf_distributions.append(probas)
             leaf_samples.append(len(leaf.conjunctions))
             leaf_nodes.append(leaf_idx)
