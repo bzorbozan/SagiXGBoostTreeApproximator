@@ -52,20 +52,22 @@ class FBT():
         :param pruned_forest: A list of trees, represnt a post-pruning forest. Relevant mostly for the experiment presented in the paper
         :param tree_conjunctions: This para
         """
-        self.feature_cols = feature_cols
-        self.label_col = label_col
-        self.int_cols = [k for k,v in train[feature_cols].dtypes.items() if 'int' in str(v)]
-        self.xgb_model = xgb_model
-        if pruned_forest is None or trees_conjunctions_total is None:
-            self.trees_conjunctions_total = extractConjunctionSetsFromForest(self.xgb_model,train[self.label_col].unique(),self.feature_cols)
-            print('Start pruning')
-            self.prune(train)
-        else:
-            self.pruner = Pruner()
-            self.trees_conjunctions_total = trees_conjunctions_total
-            self.trees_conjunctions = pruned_forest
-        self.cs = ConjunctionSet(max_number_of_conjunctions=self.max_number_of_conjunctions)
-        self.cs.fit(self.trees_conjunctions,train, feature_cols,label_col,int_features=self.int_cols)
+        # Everything until this line (until next comment) shoud be taken out and calculated in the outer loop
+        # self.feature_cols = feature_cols
+        # self.label_col = label_col
+        # self.int_cols = [k for k,v in train[feature_cols].dtypes.items() if 'int' in str(v)]
+        # self.xgb_model = xgb_model
+        # if pruned_forest is None or trees_conjunctions_total is None:
+        #     self.trees_conjunctions_total = extractConjunctionSetsFromForest(self.xgb_model,train[self.label_col].unique(),self.feature_cols)
+        #     print('Start pruning')
+        #     self.prune(train)
+        # else:
+        #     self.pruner = Pruner()
+        #     self.trees_conjunctions_total = trees_conjunctions_total
+        #     self.trees_conjunctions = pruned_forest
+        # self.cs = ConjunctionSet(max_number_of_conjunctions=self.max_number_of_conjunctions)
+        # self.cs.fit(self.trees_conjunctions,train, feature_cols,label_col,int_features=self.int_cols)
+        # Everything above this line (below previous comment) should be taken out and calculated in the outer loop
         print('Start ordering conjunction set in a tree structure')
         self.tree = Tree(self.cs.conjunctions, self.cs.splitting_points,self.max_depth)
         self.tree.split()
@@ -140,13 +142,59 @@ class FBT():
             leaves.extend(self._get_all_leaves(node.right))
         return leaves
     
+    def _get_leaf_subtree_sides(self):
+        """
+        Get which side of the root (left=0 or right=1) each leaf falls on.
+        Assumes that leaf.leaf_idx has already been assigned by map_to_buckets
+        Returns: np.array of shape (n_leaves,) with values 0 or 1
+        """
+        if self.tree.selected_feature is None: # tree is just single leaf
+            return np.array([0])
+        
+        leaf_sides_dict = {}
+        
+        def traverse_and_assign(node, side):
+            if node.selected_feature is None:  # is leaf
+                # use EXISTING leaf_idx (don't create new one)
+                if hasattr(node, 'leaf_idx'):
+                    leaf_sides_dict[node.leaf_idx] = side
+                return
+            
+            if node.left:
+                traverse_and_assign(node.left, side)
+            if node.right:
+                traverse_and_assign(node.right, side)
+        
+        # Traverse subtrees
+        if self.tree.left:
+            traverse_and_assign(self.tree.left, 0)
+        if self.tree.right:
+            traverse_and_assign(self.tree.right, 1)
+        
+        # Convert to array
+        n_leaves = len(leaf_sides_dict)
+        leaf_sides = np.array([leaf_sides_dict[i] for i in range(n_leaves)], dtype=np.int32)
+        
+        return leaf_sides
+
     def map_to_buckets(self, k=2):
         """"
         Implemented for 2 buckets only for now. Will be updated in the future for k-buckets
         """
-         # Get all leaves from the tree
+        # Get all leaves from the tree
         leaves = self._get_all_leaves(self.tree)
+
+        # Assign idx here for consistency & re-use everywhere else -> so that the idx is consistent regardless fo traversal order
+        for leaf_idx, leaf in enumerate(leaves):
+            leaf.leaf_idx = leaf_idx 
         
+        # Get the leaf sides -> in example shapecart code (BranchingTree.py) Leaf Sides only calculated if K==2
+        if k == 2: 
+            # get init solution from tree
+            leaf_sides = self._get_leaf_subtree_sides()
+        else:
+            leaf_sides = None
+
         # Prepare data
         leaf_distributions = []
         leaf_samples = []
@@ -169,7 +217,7 @@ class FBT():
             leaf_distributions=leaf_distributions,
             leaf_samples=leaf_samples,
             leaf_nodes=leaf_nodes,
-            leaf_sides=None
+            leaf_sides=leaf_sides
         )
         
         # Store results
@@ -177,7 +225,6 @@ class FBT():
         
         # Assign buckets back to leaves
         for leaf_idx, leaf in enumerate(leaves):
-            leaf.leaf_idx = leaf_idx
             leaf.bucket_assignment = bucket_assignments[leaf_idx]
         
         return result
