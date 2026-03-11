@@ -37,7 +37,7 @@ class FBT():
         self.max_iter = 10
         self.random_state = 42
 
-    def fit(self,conj_set, feature_cols,label_col):
+    def fit(self,conj_set, splitting_points, feature_cols,label_col):
         """
         Generates the decision tree by applying the following stages:
         1. Generating a conjunction set that represents each tree of the decision forest
@@ -54,25 +54,15 @@ class FBT():
         """
         self.feature_cols = feature_cols
         self.label_col = label_col
-   
+            #         conjunctions, 
+            # splitting_points_one_feature, # this will force Tree.split() to only go through the key-value pairs of one feature
+            # feature_cols=[feat_col],
+            # label_col=label_col
         self.cs = conj_set
-        print('Start ordering conjunction set in a tree structure')
-        self.tree = Tree(self.cs.conjunctions, self.cs.splitting_points,self.max_depth)
+        self.tree = Tree(self.cs, splitting_points,self.max_depth)
         self.tree.split()
-        print('Construction of tree has been completed')
-
-    # def prune(self,train):
-    #     """
-
-    #     :param train: pandas dataframe used as a pruning dataset
-    #     :return: creates a pruned decision forest (include only the relevant trees)
-    #     """
-    #     if self.pruning_method == None:
-    #         self.trees_conjunctions = self.trees_conjunctions_total
-    #     self.pruner = Pruner()
-    #     if self.pruning_method == 'auc':
-    #         self.trees_conjunctions = self.pruner.max_auc_pruning(self.trees_conjunctions_total, train[self.feature_cols],
-    #                                                                   train[self.label_col], min_forest_size=self.min_forest_size)
+        leaves = self._get_all_leaves(self.tree)
+        self.n_leaves = len(leaves)
 
     def predict_proba(self,X):
         """
@@ -219,9 +209,9 @@ class FBT():
         for leaf_idx, leaf in enumerate(leaves):
             leaf.bucket_assignment = bucket_assignments[leaf_idx]
             if leaf.bucket_assignment == 0:
-                left_conjunctions.append(leaf.conjunctions)
+                left_conjunctions.extend(leaf.conjunctions)
             else: # bucket_assignment == 1 (go right)
-                right_conjunctions.append(leaf.conjunctions)
+                right_conjunctions.extend(leaf.conjunctions)
         return result, left_conjunctions, right_conjunctions
 
     def coordinate_descent(self, k_, leaf_distributions, leaf_samples, leaf_nodes, leaf_sides=None):
@@ -232,6 +222,7 @@ class FBT():
                 warnings.filterwarnings('error')
                 try:
                     kmeans = KMeans(n_clusters=k_, copy_x=False)
+                    assert len(leaf_distributions) >= k_, f'Number of leaf nodes ({len(leaf_distributions)}) must be at least k ({k_}) for KMeans initialization'
                     kmeans.fit(leaf_distributions, sample_weight=leaf_samples)
                     assignments = kmeans.labels_
                 except Warning:

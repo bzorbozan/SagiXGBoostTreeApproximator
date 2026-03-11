@@ -35,18 +35,23 @@ class Tree():
         #    The one with the highest information gain
         # 3. Information gain is calculated as the mean emtropy across the different feature dimensions
         if len(self.conjunctions) == 1 or self.max_depth == 0:
+            print("\t \t \t Reached leaf with conjunctions:")
             self.selected_feature = None
             self.left = None
             self.right = None
             return
-        if len(set([np.argmax(conj.label_probas) for conj in self.conjunctions])) > 1:
-            self.selected_feature, self.selected_value, self.entropy, \
-            l_conjunctions, r_conjunctions = select_splitting_feature_by_entropy(self.conjunctions, self.splitting_values)
-        else:
-            self.selected_feature, self.selected_value, self.entropy, \
-            l_conjunctions, r_conjunctions = select_splitting_feature_by_max_splitting(self.conjunctions,
-                                                                                 self.splitting_values)
+        try:
+            if len(set([np.argmax(conj.label_probas) for conj in self.conjunctions])) > 1:
+                self.selected_feature, self.selected_value, self.entropy, \
+                l_conjunctions, r_conjunctions = select_splitting_feature_by_entropy(self.conjunctions, self.splitting_values)
+            else:
+                self.selected_feature, self.selected_value, self.entropy, \
+                l_conjunctions, r_conjunctions = select_splitting_feature_by_max_splitting(self.conjunctions, self.splitting_values)
+        except AttributeError:
+            print(len(self.conjunctions))
+            raise Exception("Attribute error in spliting conjunctions. Check the conjunctions above")
         if self.selected_feature is None:
+            print("\t \t \t Reached leaf with conjunctions:")
             return
         descending_splitting_values = {k:([i for i in v if i!=self.selected_value] if k == self.selected_feature else v) for k,v in self.splitting_values.items()}
         self.left = Tree(l_conjunctions,descending_splitting_values,max_depth = self.max_depth-1)

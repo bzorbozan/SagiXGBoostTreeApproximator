@@ -18,6 +18,8 @@ import traceback
 
 def _leaf_proba(conjunctions):
     """Mean softmax over conjunctions -- mirrors Tree.predict_instance_proba."""
+    if not conjunctions:
+        raise ValueError('_leaf_proba called with an empty conjunction list.')
     return np.array([softmax(c.label_probas) for c in conjunctions]).mean(axis=0)[0]
 
 def _route_through_buckets(fbt, X_node, feat_idx):
@@ -57,7 +59,7 @@ class ShapeFBT():
         self.min_samples_split      = min_samples_split
         self.min_conjunctions_split = min_conjunctions_split
     
-    def _fit_one_feature(self, conjunctions, feat_col, label_col):
+    def _fit_one_feature(self, conjunctions, feat_col, feat_idx, label_col):
         """
         Fit FBT on a single feature at the current node, then map_to_buckets.
 
@@ -71,27 +73,29 @@ class ShapeFBT():
             max_number_of_conjunctions=self.max_number_of_conjunctions,
             pruning_method=None,
         )
-        try:
-            splitting_points_one_feature =  {feat_col: self.cs.splitting_points[feat_col]} if feat_col in self.cs.splitting_points else {}
-            print(splitting_points_one_feature)
-            fbt.fit( 
-                conjunctions, 
-                splitting_points_one_feature, # this will force Tree.split() to only go through the key-value pairs of one feature
-                feature_cols=[feat_col],
-                label_col=label_col
-            )
-            result, left_conjunctions, right_conjunctions = fbt.map_to_buckets(k=self.k)
-        except Exception:
-            print("There was an exception")
-            traceback.print_exc()
+        splitting_points_one_feature =  {feat_idx: self.cs.splitting_points[feat_idx]} if feat_idx in self.cs.splitting_points else {}
+        print("the split points are:", splitting_points_one_feature)
+        print(self.cs.splitting_points)
+        fbt.fit( 
+            conj_set=conjunctions,
+            splitting_points=splitting_points_one_feature,
+            feature_cols=[feat_col],
+            label_col=label_col,
+        )
+        n_leaves = fbt.n_leaves
+        if n_leaves < 2:
             return None, None, None, None
+        
+        result, left_conjunctions, right_conjunctions = fbt.map_to_buckets(k=self.k)
 
         if result['impurity_decrease'] <= self.min_impurity_decrease:
             return None, None, None, None
 
         return fbt, result, left_conjunctions, right_conjunctions
 
-    def _best_feature_split(self, conjunctions, feature_cols, label_col):
+    def _best_feature_split(self, 
+                            conjunctions, 
+                            feature_cols, label_col):
         """
         Call FBT.fit() + map_to_buckets() for every feature on the node's
         data. Return the feature with the highest impurity decrease.
@@ -104,13 +108,15 @@ class ShapeFBT():
 
         for feat_idx, feat_col in enumerate(feature_cols):
             print("Now trying to split for feat:", feat_col)
-
-            fbt, result, left_con, right_cons = self._fit_one_feature(conjunctions, feat_col, label_col)
+            
+            fbt, result, left_con, right_cons = self._fit_one_feature(conjunctions=conjunctions, 
+                                                                      feat_col=feat_col, 
+                                                                      feat_idx=feat_idx, 
+                                                                      label_col=label_col)
 
             if fbt is not None and result['impurity_decrease'] > best_imp:
                 best_imp = result['impurity_decrease']
                 best     = (feat_col, feat_idx, fbt, result, [left_con, right_cons])
-
         return best
 
     # def _select_best_feature():
@@ -152,7 +158,7 @@ class ShapeFBT():
         if feat_col is None:
             print('ShapeFBT: no valid split at root -- single-leaf tree.')
             return self
-
+        print("---------------------------STARTING ACTUAL LOOP ---------------")
         heap = []
         heapq.heappush(heap, (-result['impurity_decrease'], 0, feat_col, feat_idx, fbt, result, conjunction_split))
 
@@ -196,10 +202,11 @@ class ShapeFBT():
                     continue
                 if len(child_conjunctions) < self.min_conjunctions_split:
                     continue
+                assert isinstance(child_conjunctions[0], Conjunction), 'there we go'
                 c_col, c_idx, c_fbt, c_result, conjs_split = self._best_feature_split(child_conjunctions, feature_cols, label_col)
-                c_left, c_right = conjs_split
                 if c_col is None:
                     continue
+                c_left, c_right = conjs_split
                 heapq.heappush(heap, (-c_result['impurity_decrease'], child_idx, c_col, c_idx, c_fbt, c_result, (c_left, c_right))) # ADD CHILD TO THE HEAP
             
             self.shape_n_leaves = int(np.sum(self.shape_is_leaf))
@@ -244,16 +251,19 @@ class ShapeFBT():
     def predict_Xy(self, X, y=None):
         """
         Route raw inputs through the outer shape tree and inner FBT trees.
-        
+
+        NOTE: Returns a 2-tuple — always unpack as: predictions, probas = model.predict_Xy(X)
+
         Parameters
         ----------
         X : pd.DataFrame or np.ndarray, shape (n_samples, n_features)
-        y : array-like, optional — if provided, also returns accuracy
-        
+        y : array-like, optional — if provided, also prints accuracy
+
         Returns
         -------
-        predictions : np.ndarray of int, shape (n_samples,)
-        probas      : np.ndarray of float, shape (n_samples, n_classes)
+        tuple of:
+            predictions : np.ndarray of int, shape (n_samples,)  — argmax class indices
+            probas      : np.ndarray of float, shape (n_samples, n_classes)  — class probabilities
         """
         if isinstance(X, pd.DataFrame):
             X = X[self.feature_cols].values
@@ -272,7 +282,15 @@ class ShapeFBT():
     # PREDICTION - OLDDDD
     def _predict_instance_proba(self, inst, node_idx):
         if self.shape_is_leaf[node_idx]:
-            conjs = self.shape_conjunctions[node_idx] or self.shape_conjunctions[0]
+            conjs = self.shape_conjunctions[node_idx]
+            if not conjs:
+                import warnings
+                warnings.warn(
+                    f'Leaf node {node_idx} has no conjunctions; falling back to root conjunctions. '
+                    'This may indicate a split routed all conjunctions to one side.',
+                    RuntimeWarning, stacklevel=2
+                )
+                conjs = self.shape_conjunctions[0]
             return _leaf_proba(conjs)
         feat_col, feat_idx, fbt = self.shape_nodes[node_idx]
         branch = int(_route_through_buckets(fbt, inst.reshape(1, -1), feat_idx)[0])
@@ -304,7 +322,14 @@ class ShapeFBT():
                     f'(depth {self.shape_depths[node_idx]})'
                 )
                 node_idx = self.shape_children[node_idx][branch]
-            conjs = self.shape_conjunctions[node_idx] or self.shape_conjunctions[0]
+            conjs = self.shape_conjunctions[node_idx]
+            if not conjs:
+                import warnings
+                warnings.warn(
+                    f'Leaf node {node_idx} has no conjunctions; falling back to root conjunctions.',
+                    RuntimeWarning, stacklevel=2
+                )
+                conjs = self.shape_conjunctions[0]
             path.append(
                 f'leaf {node_idx} | {len(self.shape_conjunctions[node_idx])} conjunctions '
                 f'| pred={int(np.argmax(_leaf_proba(conjs)))}'
