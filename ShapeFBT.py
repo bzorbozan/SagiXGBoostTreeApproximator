@@ -5,11 +5,44 @@ from conjunctionset import *
 from tree import *
 from pruning import *
 from FBT import *
+from TreesExtraction import extractConjunctionSetsFromForest
+from pruning import Pruner
 
+from utils import softmax
+import heapq
+import numpy as np
+import pandas as pd
+import traceback
 
+# Helper Functions
+
+def _leaf_proba(conjunctions):
+    """Mean softmax over conjunctions -- mirrors Tree.predict_instance_proba."""
+    return np.array([softmax(c.label_probas) for c in conjunctions]).mean(axis=0)[0]
+
+def _route_through_buckets(fbt, X_node, feat_idx):
+    """
+    Route each row of X_node through fbt.tree and return the
+    bucket_assignment (0..k-1) stored on the reached leaf by map_to_buckets.
+    fbt.tree was built on a single feature, so feat_idx selects that column.
+    """
+    branching = np.zeros(len(X_node), dtype=np.int32)
+    for i, inst in enumerate(X_node):
+        node = fbt.tree
+        while node.selected_feature is not None:
+            if inst[feat_idx] >= node.selected_value:
+                node = node.left
+            else:
+                node = node.right
+        branching[i] = node.bucket_assignment
+    return branching
+
+# #ShapeFBT Class
 
 class ShapeFBT():
-    def __init__():
+    def __init__(self, max_depth, min_forest_size, max_number_of_conjunctions, pruning_method=None, min_samples_split=10, min_conjunctions_split=2, min_impurity_decrease=0.0, k=2, verbose=False,):
+
+        self.verbose = verbose
 
         # Attributes needed to calculate conjunction sets
         self.pruning_method = pruning_method
@@ -21,10 +54,10 @@ class ShapeFBT():
         # Related to inner loop
         self.min_impurity_decrease = min_impurity_decrease
         self.k = k
-
-        # Related to outer loop
+        self.min_samples_split      = min_samples_split
+        self.min_conjunctions_split = min_conjunctions_split
     
-    def _fit_one_feature(self, feat_col, label_col):
+    def _fit_one_feature(self, conjunctions, feat_col, label_col):
         """
         Fit FBT on a single feature at the current node, then map_to_buckets.
 
@@ -40,22 +73,25 @@ class ShapeFBT():
         )
         try:
             splitting_points_one_feature =  {feat_col: self.cs.splitting_points[feat_col]} if feat_col in self.cs.splitting_points else {}
+            print(splitting_points_one_feature)
             fbt.fit( 
-                self.cs.conjunctions, 
+                conjunctions, 
                 splitting_points_one_feature, # this will force Tree.split() to only go through the key-value pairs of one feature
                 feature_cols=[feat_col],
                 label_col=label_col
             )
-            result = fbt.map_to_buckets(k=self.k)
+            result, left_conjunctions, right_conjunctions = fbt.map_to_buckets(k=self.k)
         except Exception:
-            return None, None
+            print("There was an exception")
+            traceback.print_exc()
+            return None, None, None, None
 
         if result['impurity_decrease'] <= self.min_impurity_decrease:
-            return None, None
+            return None, None, None, None
 
-        return fbt, result
+        return fbt, result, left_conjunctions, right_conjunctions
 
-    def _best_feature_split(self, train_node, feature_cols, label_col):
+    def _best_feature_split(self, conjunctions, feature_cols, label_col):
         """
         Call FBT.fit() + map_to_buckets() for every feature on the node's
         data. Return the feature with the highest impurity decrease.
@@ -64,21 +100,21 @@ class ShapeFBT():
         or      (None, None, None, None) if no valid split.
         """
         best_imp  = self.min_impurity_decrease
-        best      = (None, None, None, None)
+        best      = (None, None, None, None, None)
 
         for feat_idx, feat_col in enumerate(feature_cols):
+            print("Now trying to split for feat:", feat_col)
 
-            fbt, result = self._fit_one_feature(feat_col, label_col)
+            fbt, result, left_con, right_cons = self._fit_one_feature(conjunctions, feat_col, label_col)
 
             if fbt is not None and result['impurity_decrease'] > best_imp:
                 best_imp = result['impurity_decrease']
-                best     = (feat_col, feat_idx, fbt, result)
+                best     = (feat_col, feat_idx, fbt, result, [left_con, right_cons])
 
         return best
 
     # def _select_best_feature():
     def fit(self,train,feature_cols,label_col, xgb_model, pruned_forest=None, trees_conjunctions_total=None):
-        # Everything until this line (until next comment) shoud be taken out and calculated in the outer loop
         self.feature_cols = feature_cols
         self.label_col = label_col
         self.int_cols = [k for k,v in train[feature_cols].dtypes.items() if 'int' in str(v)]
@@ -93,54 +129,40 @@ class ShapeFBT():
             self.trees_conjunctions = pruned_forest
         self.cs = ConjunctionSet(max_number_of_conjunctions=self.max_number_of_conjunctions)
         self.cs.fit(self.trees_conjunctions,train, feature_cols,label_col,int_features=self.int_cols)
-        # Everything above this line (below previous comment) should be taken out and calculated in the outer loop
-        # self.tree = Tree(self.cs.conjunctions, self.cs.splitting_points,self.max_depth)
-        # self.tree.split()
 
         # Now we pass this into the FBT without needing to re-calculate it during every loop
         # we will have splitting_points only be called for a single feature (type still has to be a dict)
         # honestly you can just call the rest directly, it is just 2 lines. but still keep there for modularity and to not mess with it as much 
         # then you call map to buckets which give you the L/R results -> 0/1 
 
-        while ___:
-            Run CART with FBT
-
         # ── Step 2: best-first TDIDT loop ────────────────────────────────
-        print('ShapeFBT: starting TDIDT loop ...')
-        X = train[feature_cols].values
-        y = train[label_col].values
+        print('ShapeFBT: starting TDIDT loop ... (pls workk)')
+        #X = train[feature_cols].values
+        #y = train[label_col].values
 
         # initialise root (node 0)
         self.shape_nodes        = [None]
-        self.shape_conjunctions = [self.cs.conjunctions]
-        self.shape_point_idxs   = [np.arange(len(y))]
-        self.shape_children     = [[]]
-        self.shape_parents      = [None]
-        self.shape_depths       = [0]
+        self.shape_conjunctions = [self.cs.conjunctions] # conjunctinos at that node
+        self.shape_children     = [[]] # you look up shape_children[node_idx][branch] to see where to go next
+        self.shape_depths       = [0] # do we care to keep track of this
         self.shape_is_leaf      = [True]
-        self.shape_n_leaves     = 1
+        self.shape_n_leaves     = 1 # not needed
 
-        feat_col, feat_idx, fbt, result = self._best_feature_split(
-            train, feature_cols, label_col
-        )
+        feat_col, feat_idx, fbt, result, conjunction_split = self._best_feature_split(self.cs.conjunctions, feature_cols, label_col)
         if feat_col is None:
             print('ShapeFBT: no valid split at root -- single-leaf tree.')
             return self
 
         heap = []
-        heapq.heappush(
-            heap, (-result['impurity_decrease'], 0, feat_col, feat_idx, fbt, result)
-        )
+        heapq.heappush(heap, (-result['impurity_decrease'], 0, feat_col, feat_idx, fbt, result, conjunction_split))
 
         while heap:
-            neg_imp, node_idx, feat_col, feat_idx, fbt, result = heapq.heappop(heap)
+            neg_imp, node_idx, feat_col, feat_idx, fbt, result, conjunction_split = heapq.heappop(heap)
 
             if self.max_depth is not None and self.shape_depths[node_idx] >= self.max_depth:
                 continue
 
-            node_point_idxs   = self.shape_point_idxs[node_idx]
             node_conjunctions = self.shape_conjunctions[node_idx]
-            X_node            = X[node_point_idxs]
 
             if len(node_conjunctions) < self.min_conjunctions_split:
                 continue
@@ -150,56 +172,36 @@ class ShapeFBT():
             self.shape_is_leaf[node_idx]  = False
             self.shape_children[node_idx] = []
 
-            branching = _route_through_buckets(fbt, X_node, feat_idx)
-            k_actual  = int(branching.max()) + 1
+            # branching = _route_through_buckets(fbt, X_node, feat_idx)
+            # k_actual  = int(branching.max()) + 1 # in this case k actual would be the len(partitions)
+            # np.zeros(len(X_node), dtype=np.int32) -> each entry is either 0 or 1 (direction for conjunction)
+            # partitions = _partition_conjunctions(node_conjunctions, X_node, branching, k_actual) # dimensionality here: [[] for _ in range(k)]
+            
+            partitions = conjunction_split
 
-            partitions = _partition_conjunctions(
-                node_conjunctions, X_node, branching, k_actual
-            )
-
-            self._log(
-                f'  Node {node_idx} (depth {self.shape_depths[node_idx]}): '
-                f'split on "{feat_col}", {k_actual} branches, '
-                f'impurity_decrease={-neg_imp:.4f}'
-            )
-
-            for branch_idx in range(k_actual):
-                child_idx          = len(self.shape_nodes)
-                child_depth        = self.shape_depths[node_idx] + 1
-                child_point_idxs   = node_point_idxs[branching == branch_idx]
-                child_conjunctions = partitions[branch_idx]
-
+            for direction in range(len(partitions)): # 0 for left, 1 for right
+                child_conjunctions = partitions[direction]
+                child_idx = len(self.shape_nodes) # this child is the iˆth node to be added to the heap
+                child_depth = self.shape_depths[node_idx] + 1
+                
+                # append placeholders so child_idx is valid in all parallel lists
                 self.shape_nodes.append(None)
                 self.shape_conjunctions.append(child_conjunctions)
-                self.shape_point_idxs.append(child_point_idxs)
                 self.shape_children.append([])
-                self.shape_parents.append(node_idx)
                 self.shape_depths.append(child_depth)
                 self.shape_is_leaf.append(True)
                 self.shape_children[node_idx].append(child_idx)
 
-                if len(child_point_idxs) < self.min_samples_split:
+                if self.max_depth is not None and child_depth >= self.max_depth:
                     continue
                 if len(child_conjunctions) < self.min_conjunctions_split:
                     continue
-                if self.max_depth is not None and child_depth >= self.max_depth:
-                    continue
-                if len(np.unique(y[child_point_idxs])) == 1:
-                    continue
-
-                train_child = train.iloc[child_point_idxs]
-                c_col, c_idx, c_fbt, c_result = self._best_feature_split(
-                    train_child, feature_cols, label_col
-                )
+                c_col, c_idx, c_fbt, c_result, conjs_split = self._best_feature_split(child_conjunctions, feature_cols, label_col)
+                c_left, c_right = conjs_split
                 if c_col is None:
                     continue
-
-                heapq.heappush(
-                    heap,
-                    (-c_result['impurity_decrease'], child_idx,
-                     c_col, c_idx, c_fbt, c_result)
-                )
-
+                heapq.heappush(heap, (-c_result['impurity_decrease'], child_idx, c_col, c_idx, c_fbt, c_result, (c_left, c_right))) # ADD CHILD TO THE HEAP
+            
             self.shape_n_leaves = int(np.sum(self.shape_is_leaf))
 
         print(f'ShapeFBT: TDIDT complete -- {self.shape_n_leaves} leaves, '
@@ -218,57 +220,95 @@ class ShapeFBT():
         if self.pruning_method == 'auc':
             self.trees_conjunctions = self.pruner.max_auc_pruning(self.trees_conjunctions_total, train[self.feature_cols],
                                                                       train[self.label_col], min_forest_size=self.min_forest_size)
-                
+
+    def _route_instance(self, x):
+        """Route a single raw instance through the outer and inner trees."""
+        node_idx = 0
+        while self.shape_children[node_idx]:  # while not a leaf
+            feat_col, feat_idx, fbt = self.shape_nodes[node_idx]
+            
+            # walk the inner FBT tree on this one feature
+            inner_node = fbt.tree
+            while inner_node.selected_feature is not None:
+                if x[feat_idx] >= inner_node.selected_value: # based on tree.predict_proba_and_depth
+                    inner_node = inner_node.left
+                else:
+                    inner_node = inner_node.right
+            
+            # inner_node is now a leaf with bucket_assignment set by map_to_buckets
+            branch = inner_node.bucket_assignment
+            branch = min(branch, len(self.shape_children[node_idx]) - 1)
+            node_idx = self.shape_children[node_idx][branch]
+
+        return _leaf_proba(self.shape_conjunctions[node_idx])
+    def predict_Xy(self, X, y=None):
+        """
+        Route raw inputs through the outer shape tree and inner FBT trees.
+        
+        Parameters
+        ----------
+        X : pd.DataFrame or np.ndarray, shape (n_samples, n_features)
+        y : array-like, optional — if provided, also returns accuracy
+        
+        Returns
+        -------
+        predictions : np.ndarray of int, shape (n_samples,)
+        probas      : np.ndarray of float, shape (n_samples, n_classes)
+        """
+        if isinstance(X, pd.DataFrame):
+            X = X[self.feature_cols].values
+
+        probas = np.array([self._route_instance(x) for x in X])
+        predictions = np.argmax(probas, axis=1)
+
+        if y is not None:
+            acc = np.mean(predictions == np.array(y))
+            print(f'Accuracy: {acc:.4f}')
+
+        return predictions, probas
 
 
-def _leaf_proba(conjunctions):
-    """Mean softmax over conjunctions -- mirrors Tree.predict_instance_proba."""
-    return np.array([softmax(c.label_probas) for c in conjunctions]).mean(axis=0)[0]
 
-# BZ NOTE: I am skeptical of this - do we want the conjunctions to eb routed in the outer tree like this?
-def _partition_conjunctions(conjunctions, X_node, branching, k):
-    """
-    Assign each conjunction to one of k child buckets by majority vote
-    of the data points it contains at this node.
-    Falls back to cosine similarity for conjunctions with no local points.
-    """
-    partitions = [[] for _ in range(k)]
-    for conj in conjunctions:
-        inside = np.array([conj.containsInstance(inst) for inst in X_node])
-        if inside.any():
-            winner = int(np.bincount(branching[inside], minlength=k).argmax())
-        else:
-            conj_dist = np.exp(conj.label_probas)
-            conj_dist /= conj_dist.sum() + 1e-12
-            best_b, best_sim = 0, -np.inf
-            for b in range(k):
-                if not partitions[b]:
-                    continue
-                b_dist = np.array([
-                    np.exp(c.label_probas) / (np.exp(c.label_probas).sum() + 1e-12)
-                    for c in partitions[b]
-                ]).mean(axis=0)
-                sim = np.dot(conj_dist, b_dist) / (
-                    np.linalg.norm(conj_dist) * np.linalg.norm(b_dist) + 1e-12)
-                if sim > best_sim:
-                    best_sim, best_b = sim, b
-            winner = best_b
-        partitions[winner].append(conj)
-    return partitions
+    # PREDICTION - OLDDDD
+    def _predict_instance_proba(self, inst, node_idx):
+        if self.shape_is_leaf[node_idx]:
+            conjs = self.shape_conjunctions[node_idx] or self.shape_conjunctions[0]
+            return _leaf_proba(conjs)
+        feat_col, feat_idx, fbt = self.shape_nodes[node_idx]
+        branch = int(_route_through_buckets(fbt, inst.reshape(1, -1), feat_idx)[0])
+        branch = min(branch, len(self.shape_children[node_idx]) - 1)
+        return self._predict_instance_proba(inst, self.shape_children[node_idx][branch])
 
-def _route_through_buckets(fbt, X_node, feat_idx):
-    """
-    Route each row of X_node through fbt.tree and return the
-    bucket_assignment (0..k-1) stored on the reached leaf by map_to_buckets.
-    fbt.tree was built on a single feature, so feat_idx selects that column.
-    """
-    branching = np.zeros(len(X_node), dtype=np.int32)
-    for i, inst in enumerate(X_node):
-        node = fbt.tree
-        while node.selected_feature is not None:
-            if inst[feat_idx] >= node.selected_value:
-                node = node.left
-            else:
-                node = node.right
-        branching[i] = node.bucket_assignment
-    return branching
+    def predict_proba(self, X):
+        """Return class probability estimates, shape (n_samples, n_classes)."""
+        if isinstance(X, pd.DataFrame):
+            X = X[self.feature_cols].values
+        return np.array([self._predict_instance_proba(inst, 0) for inst in X])
+
+    def predict(self, X):
+        """Return predicted class indices."""
+        return np.argmax(self.predict_proba(X), axis=1)
+
+    def get_decision_paths(self, X): # """Return a human-readable decision path per instance."""
+        if isinstance(X, pd.DataFrame):
+            X = X[self.feature_cols].values
+        paths = []
+        for inst in X:
+            path, node_idx = [], 0
+            while not self.shape_is_leaf[node_idx]:
+                feat_col, feat_idx, fbt = self.shape_nodes[node_idx]
+                branch = int(_route_through_buckets(fbt, inst.reshape(1, -1), feat_idx)[0])
+                branch = min(branch, len(self.shape_children[node_idx]) - 1)
+                path.append(
+                    f'{feat_col} -> branch {branch} '
+                    f'(depth {self.shape_depths[node_idx]})'
+                )
+                node_idx = self.shape_children[node_idx][branch]
+            conjs = self.shape_conjunctions[node_idx] or self.shape_conjunctions[0]
+            path.append(
+                f'leaf {node_idx} | {len(self.shape_conjunctions[node_idx])} conjunctions '
+                f'| pred={int(np.argmax(_leaf_proba(conjs)))}'
+            )
+            paths.append(path)
+        return paths
+

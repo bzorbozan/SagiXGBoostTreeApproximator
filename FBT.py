@@ -37,7 +37,7 @@ class FBT():
         self.max_iter = 10
         self.random_state = 42
 
-    def fit(self,train,feature_cols,label_col, xgb_model, pruned_forest=None, trees_conjunctions_total=None):
+    def fit(self,conj_set, feature_cols,label_col):
         """
         Generates the decision tree by applying the following stages:
         1. Generating a conjunction set that represents each tree of the decision forest
@@ -52,39 +52,27 @@ class FBT():
         :param pruned_forest: A list of trees, represnt a post-pruning forest. Relevant mostly for the experiment presented in the paper
         :param tree_conjunctions: This para
         """
-        # Everything until this line (until next comment) shoud be taken out and calculated in the outer loop
-        # self.feature_cols = feature_cols
-        # self.label_col = label_col
-        # self.int_cols = [k for k,v in train[feature_cols].dtypes.items() if 'int' in str(v)]
-        # self.xgb_model = xgb_model
-        # if pruned_forest is None or trees_conjunctions_total is None:
-        #     self.trees_conjunctions_total = extractConjunctionSetsFromForest(self.xgb_model,train[self.label_col].unique(),self.feature_cols)
-        #     print('Start pruning')
-        #     self.prune(train)
-        # else:
-        #     self.pruner = Pruner()
-        #     self.trees_conjunctions_total = trees_conjunctions_total
-        #     self.trees_conjunctions = pruned_forest
-        # self.cs = ConjunctionSet(max_number_of_conjunctions=self.max_number_of_conjunctions)
-        # self.cs.fit(self.trees_conjunctions,train, feature_cols,label_col,int_features=self.int_cols)
-        # Everything above this line (below previous comment) should be taken out and calculated in the outer loop
+        self.feature_cols = feature_cols
+        self.label_col = label_col
+   
+        self.cs = conj_set
         print('Start ordering conjunction set in a tree structure')
         self.tree = Tree(self.cs.conjunctions, self.cs.splitting_points,self.max_depth)
         self.tree.split()
         print('Construction of tree has been completed')
 
-    def prune(self,train):
-        """
+    # def prune(self,train):
+    #     """
 
-        :param train: pandas dataframe used as a pruning dataset
-        :return: creates a pruned decision forest (include only the relevant trees)
-        """
-        if self.pruning_method == None:
-            self.trees_conjunctions = self.trees_conjunctions_total
-        self.pruner = Pruner()
-        if self.pruning_method == 'auc':
-            self.trees_conjunctions = self.pruner.max_auc_pruning(self.trees_conjunctions_total, train[self.feature_cols],
-                                                                      train[self.label_col], min_forest_size=self.min_forest_size)
+    #     :param train: pandas dataframe used as a pruning dataset
+    #     :return: creates a pruned decision forest (include only the relevant trees)
+    #     """
+    #     if self.pruning_method == None:
+    #         self.trees_conjunctions = self.trees_conjunctions_total
+    #     self.pruner = Pruner()
+    #     if self.pruning_method == 'auc':
+    #         self.trees_conjunctions = self.pruner.max_auc_pruning(self.trees_conjunctions_total, train[self.feature_cols],
+    #                                                                   train[self.label_col], min_forest_size=self.min_forest_size)
 
     def predict_proba(self,X):
         """
@@ -220,14 +208,21 @@ class FBT():
             leaf_sides=leaf_sides
         )
         
-        # Store results
+        # Store results (Note that assignments are integers from 0 to K-1, where K=2 for now) -> range(0,K)
         bucket_assignments = result['mapping']
         
-        # Assign buckets back to leaves
+        left_conjunctions, right_conjunctions = [],[] # Bucket the actual conjunctions as left or right (or other k-directions, but for now keep as L/R
+
+        # Assign buckets back to leaves 
+        # BZ TO DO: - you can do this better since all leaf samples and assignments are 2 arrays and you can more easily assign to K-branches
+        # and then instead of a left right array you can just return an array where each item is a branch [left_conjunctions, middle_conjunctions, right_conjunctions]
         for leaf_idx, leaf in enumerate(leaves):
             leaf.bucket_assignment = bucket_assignments[leaf_idx]
-        
-        return result
+            if leaf.bucket_assignment == 0:
+                left_conjunctions.append(leaf.conjunctions)
+            else: # bucket_assignment == 1 (go right)
+                right_conjunctions.append(leaf.conjunctions)
+        return result, left_conjunctions, right_conjunctions
 
     def coordinate_descent(self, k_, leaf_distributions, leaf_samples, leaf_nodes, leaf_sides=None):
 
