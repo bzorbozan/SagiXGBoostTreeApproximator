@@ -16,10 +16,10 @@ class FBT():
     """
     This class creates a decision tree from an XGboost
     """
-    def __init__(self,max_depth,min_forest_size,max_number_of_conjunctions,pruning_method=None):
+    def __init__(self, inner_tree_max_depth, min_forest_size, max_number_of_conjunctions, pruning_method=None):
         """
 
-        :param max_depth: Maximum allowed depths of the generated tree
+        :param inner_tree_max_depth: Maximum allowed depths of the generated inner tree
         :param min_forest_size: Minimum size of the pruned forest (relevant for the pruning stage)
         :param max_number_of_conjunctions:
         :param pruning_method: Pruning method. If None then there's no pruning. 'auc' is for greedy auc-bsed pruning
@@ -28,7 +28,7 @@ class FBT():
         self.min_forest_size = min_forest_size
         self.max_number_of_conjunctions = max_number_of_conjunctions
         self.pruning_method = pruning_method
-        self.max_depth = max_depth
+        self.inner_tree_max_depth = inner_tree_max_depth
 
         # Coordinate Descent Attributes (default vals not part of initialization for now)
         self.criterion = 'entropy'
@@ -59,7 +59,7 @@ class FBT():
             # feature_cols=[feat_col],
             # label_col=label_col
         self.cs = conj_set
-        self.tree = Tree(self.cs, splitting_points,self.max_depth)
+        self.tree = Tree(self.cs, splitting_points, self.inner_tree_max_depth)
         self.tree.split()
         leaves = self._get_all_leaves(self.tree)
         self.n_leaves = len(leaves)

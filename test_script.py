@@ -35,9 +35,9 @@ model.fit(train[feature_cols],train[label_col])
 
 # %%
 #    def fit(self,train,feature_cols,label_col, xgb_model, pruned_forest=None, trees_conjunctions_total=None):
-#    def __init__(self, max_depth, min_forest_size, max_number_of_conjunctions, pruning_method=None, min_samples_split=10, min_conjunctions_split=2, min_impurity_decrease=0.0, k=2, verbose=False,):
+#    def __init__(self, outer_tree_max_depth, min_forest_size, max_number_of_conjunctions, pruning_method=None, min_samples_split=10, min_conjunctions_split=2, min_impurity_decrease=0.0, k=2, verbose=False, inner_tree_max_depth=None,):
 
-sfbt = ShapeFBT(max_depth=5, min_forest_size=10, max_number_of_conjunctions=1000, pruning_method='auc')
+sfbt = ShapeFBT(outer_tree_max_depth=5, min_forest_size=10, max_number_of_conjunctions=1000, pruning_method='auc', inner_tree_max_depth=5)
 sfbt.fit(train, feature_cols, label_col, model)
 predictions, probas = sfbt.predict_Xy(test[feature_cols])
 print(predictions)

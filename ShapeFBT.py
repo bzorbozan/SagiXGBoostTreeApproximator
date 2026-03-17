@@ -42,23 +42,100 @@ def _route_through_buckets(fbt, X_node, feat_idx):
 # #ShapeFBT Class
 
 class ShapeFBT():
-    def __init__(self, max_depth, min_forest_size, max_number_of_conjunctions, pruning_method=None, min_samples_split=10, min_conjunctions_split=2, min_impurity_decrease=0.0, k=2, verbose=False,):
+    def __init__(self, 
+                 outer_tree_max_depth, 
+                 min_forest_size, 
+                 max_number_of_conjunctions, 
+                 pruning_method=None, 
+                 min_samples_split=10, 
+                 min_conjunctions_split=2, 
+                 min_impurity_decrease=0.0, 
+                 k=2, 
+                 verbose=False,
+                 inner_tree_max_depth=None,
+                 ):
 
         self.verbose = verbose
+
+        # Simple helper for conditional logging
+        # (mirrors verbose_print usage in ShapeCART-style code).
+        def verbose_print_fn(*args, **kwargs):
+            if self.verbose:
+                print(*args, **kwargs)
+        self.verbose_print = verbose_print_fn
 
         # Attributes needed to calculate conjunction sets
         self.pruning_method = pruning_method
         self.min_forest_size = min_forest_size
         self.max_number_of_conjunctions = max_number_of_conjunctions
         self.pruning_method = pruning_method
-        self.max_depth = max_depth
+
+        # Outer tree depth (ShapeFBT itself)
+        self.outer_tree_max_depth = outer_tree_max_depth
+
+        # Inner tree depth (FBT trees used at each node).
+        # If not provided, default to the same depth as the outer tree.
+        if inner_tree_max_depth is None:
+            inner_tree_max_depth = outer_tree_max_depth
+        self.inner_tree_max_depth = inner_tree_max_depth
 
         # Related to inner loop
         self.min_impurity_decrease = min_impurity_decrease
         self.k = k
         self.min_samples_split      = min_samples_split
         self.min_conjunctions_split = min_conjunctions_split
-    
+
+        # Will be populated when fitting, if a feature_dict is provided
+        self.index_dict = None
+        self.cat_dict = None
+
+    def configure_feature_dict(self, X, feature_dict):
+        """
+        Configure feature grouping based on a feature_dict.
+
+        Parameters
+        ----------
+        X : np.ndarray, shape (n_samples, n_features)
+        feature_dict : dict or None
+            If not None, expected format:
+                {key: [list_of_column_indices]}
+            where each list groups columns that belong to one (possibly
+            categorical) logical feature.
+
+        Returns
+        -------
+        index_dict : dict[int, list[int]]
+            Maps logical feature id to list of column indices.
+        cat_dict : dict[int, bool]
+            True if the logical feature is categorical (len(indices) > 1).
+        """
+        if feature_dict is None:
+            self.verbose_print('No feature dict provided, assuming all features are continuous')
+            index_dict = {i: [i] for i in range(X.shape[1])}
+            cat_dict = {i: False for i in range(X.shape[1])}
+            return index_dict, cat_dict
+        else:
+            # Copy and validate that indices are unique
+            index_dict = feature_dict.copy()
+            all_cat_idxs = []
+            for val in index_dict.values():
+                all_cat_idxs.extend(val)
+
+            assert len(all_cat_idxs) == len(set(all_cat_idxs)), 'Feature indices must be unique'
+            for i in range(X.shape[1]):  # fill in gaps, assume non-categorical
+                if i not in all_cat_idxs:
+                    index_dict[i] = [i]
+                    self.verbose_print(f'Adding index {i} as continuous')
+
+            cat_dict = {}
+            for k, v in index_dict.items():
+                cat_dict[k] = len(v) > 1
+
+            cat_list = [k for k, v in cat_dict.items() if v]
+            cont_list = [k for k, v in cat_dict.items() if not v]
+            self.verbose_print(f"Categorical features: {cat_list}, Continuous features: {cont_list}")
+            return index_dict, cat_dict
+
     def _fit_one_feature(self, conjunctions, feat_col, feat_idx, label_col):
         """
         Fit FBT on a single feature at the current node, then map_to_buckets.
@@ -68,7 +145,7 @@ class ShapeFBT():
         Returns (fbt, result) or (None, None) if no valid split.
         """
         fbt = FBT(
-            max_depth=self.max_depth,
+            inner_tree_max_depth=self.inner_tree_max_depth,
             min_forest_size=self.min_forest_size,
             max_number_of_conjunctions=self.max_number_of_conjunctions,
             pruning_method=None,
@@ -120,11 +197,24 @@ class ShapeFBT():
         return best
 
     # def _select_best_feature():
-    def fit(self,train,feature_cols,label_col, xgb_model, pruned_forest=None, trees_conjunctions_total=None):
+    def fit(self,
+            train,
+            feature_cols,
+            label_col,
+            xgb_model,
+            pruned_forest=None,
+            trees_conjunctions_total=None,
+            feature_dict=None,
+            ):
         self.feature_cols = feature_cols
         self.label_col = label_col
         self.int_cols = [k for k,v in train[feature_cols].dtypes.items() if 'int' in str(v)]
         self.xgb_model = xgb_model
+
+        # Configure feature grouping / categorical handling, if requested
+        X_matrix = train[feature_cols].values
+        self.index_dict, self.cat_dict = self.configure_feature_dict(X_matrix, feature_dict)
+
         if pruned_forest is None or trees_conjunctions_total is None:
             self.trees_conjunctions_total = extractConjunctionSetsFromForest(self.xgb_model,train[self.label_col].unique(),self.feature_cols)
             print('Start pruning')
@@ -165,7 +255,7 @@ class ShapeFBT():
         while heap:
             neg_imp, node_idx, feat_col, feat_idx, fbt, result, conjunction_split = heapq.heappop(heap)
 
-            if self.max_depth is not None and self.shape_depths[node_idx] >= self.max_depth:
+            if self.outer_tree_max_depth is not None and self.shape_depths[node_idx] >= self.outer_tree_max_depth:
                 continue
 
             node_conjunctions = self.shape_conjunctions[node_idx]
@@ -198,7 +288,7 @@ class ShapeFBT():
                 self.shape_is_leaf.append(True)
                 self.shape_children[node_idx].append(child_idx)
 
-                if self.max_depth is not None and child_depth >= self.max_depth:
+                if self.outer_tree_max_depth is not None and child_depth >= self.outer_tree_max_depth:
                     continue
                 if len(child_conjunctions) < self.min_conjunctions_split:
                     continue
