@@ -53,6 +53,7 @@ class ShapeFBT():
                  k=2, 
                  verbose=False,
                  inner_tree_max_depth=None,
+                 inner_tree_criterion='entropy',
                  ):
 
         self.verbose = verbose
@@ -78,6 +79,7 @@ class ShapeFBT():
         if inner_tree_max_depth is None:
             inner_tree_max_depth = outer_tree_max_depth
         self.inner_tree_max_depth = inner_tree_max_depth
+        self.inner_tree_criterion = inner_tree_criterion
 
         # Related to inner loop
         self.min_impurity_decrease = min_impurity_decrease
@@ -149,6 +151,7 @@ class ShapeFBT():
             min_forest_size=self.min_forest_size,
             max_number_of_conjunctions=self.max_number_of_conjunctions,
             pruning_method=None,
+            criterion=self.inner_tree_criterion,
         )
         splitting_points_one_feature =  {feat_idx: self.cs.splitting_points[feat_idx]} if feat_idx in self.cs.splitting_points else {}
         print("the split points are:", splitting_points_one_feature)
