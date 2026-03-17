@@ -3,6 +3,11 @@ Usage:
   python xgboost_run.py --dataset room --trial-id 0 --folds 0 1 2 3 4 --max-depth-choices 1 2 3 4 -1 --n-trials 20
   Use --max-depth-choices -1 to allow max_depth=None in the search space.
   Writes one JSON results file per fold under results/<dataset>/ (best trial per fold).
+  Hyperparameters tuned:
+  - max_depth: 1..4, or None (unconstrained)
+  - gamma: 0.0, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1
+  - n_estimators: 50, 100, 200, 400, 800
+  - min_child_weight: 1.0, 2.0, 5.0, 10.0
 """
 
 import os
@@ -26,6 +31,7 @@ def sample_hyperparameters(rng: np.random.Generator, max_depth_choices: list[int
     - depth (outer_tree_max_depth)            -> max_depth (tuned here)
     - min_impurity_decrease (split threshold) -> gamma (min loss reduction to split)
     - max_number_of_conjunctions (complexity/runtime) -> n_estimators
+    - min_child_weight -> QtoNakul: can we compare this to min_conjunctions_split? (not the same thing, btu tried to have a similar effect and not split weak/small children)
     """
     depth_choice = int(rng.choice(max_depth_choices))
     max_depth = None if depth_choice == -1 else depth_choice
