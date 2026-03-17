@@ -311,7 +311,6 @@ class ShapeFBT():
 
     def prune(self,train):
         """
-
         :param train: pandas dataframe used as a pruning dataset
         :return: creates a pruned decision forest (include only the relevant trees)
         """
