@@ -183,13 +183,17 @@ class ShapeFBT():
         best_imp  = self.min_impurity_decrease
         best      = (None, None, None, None, None)
 
+        # Iterate over *columns* as separate features, regardless of feature_dict.
+        # This preserves the original scalar splitting logic.
         for feat_idx, feat_col in enumerate(feature_cols):
             print("Now trying to split for feat:", feat_col)
             
-            fbt, result, left_con, right_cons = self._fit_one_feature(conjunctions=conjunctions, 
-                                                                      feat_col=feat_col, 
-                                                                      feat_idx=feat_idx, 
-                                                                      label_col=label_col)
+            fbt, result, left_con, right_cons = self._fit_one_feature(
+                conjunctions=conjunctions, 
+                feat_col=feat_col, 
+                feat_idx=feat_idx, 
+                label_col=label_col,
+            )
 
             if fbt is not None and result['impurity_decrease'] > best_imp:
                 best_imp = result['impurity_decrease']
