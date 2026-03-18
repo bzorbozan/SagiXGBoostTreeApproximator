@@ -10,6 +10,15 @@ Usage:
   - max_number_of_conjunctions: 200, 500, 1000, 2000, 5000
   - min_impurity_decrease: 0.0, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2
   - min_conjunctions_split: 2, 5, 10, 20
+  - xgb max_depth: 2, 3, 4, 5, 7, 10
+  - xgb n_estimators: 50, 100, 200, 400, 800
+  - xgb learning_rate: 0.01, 0.05, 0.1, 0.2
+  - xgb subsample: 0.6, 0.8, 1.0
+  - xgb colsample_bytree: 0.6, 0.8, 1.0
+  - xgb min_child_weight: 1.0, 2.0, 5.0, 10.0
+  - xgb gamma: 0.0, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1
+  - xgb reg_alpha: 0.0, 1e-3, 1e-2, 1e-1, 1.0, 10.0
+  - xgb reg_lambda: 0.1, 1.0, 10.0, 100.0
 """
 
 import os
@@ -66,6 +75,64 @@ def sample_hyperparameters(rng: np.random.Generator):
         "min_conjunctions_split": min_conjunctions_split,
         "k": k,
     }
+
+
+def sample_xgb_hyperparameters(rng: np.random.Generator, *, num_class: int):
+    """
+    Sample XGBoost hyperparameters for the source model ShapeFBT approximates.
+    Search space intentionally matches sagifbt_run.py.
+    """
+    max_depth = int(rng.choice([2, 3, 4, 5, 7, 10]))
+    n_estimators = int(rng.choice([50, 100, 200, 400, 800]))
+    learning_rate = float(rng.choice([0.01, 0.05, 0.1, 0.2]))
+    subsample = float(rng.choice([0.6, 0.8, 1.0]))
+    colsample_bytree = float(rng.choice([0.6, 0.8, 1.0]))
+    min_child_weight = float(rng.choice([1.0, 2.0, 5.0, 10.0]))
+    gamma = float(rng.choice([0.0, 1e-4, 5e-4, 1e-3, 5e-3, 1e-2, 5e-2, 1e-1]))
+    reg_alpha = float(rng.choice([0.0, 1e-3, 1e-2, 1e-1, 1.0, 10.0]))
+    reg_lambda = float(rng.choice([0.1, 1.0, 10.0, 100.0]))
+    objective = "multi:softprob" if num_class > 2 else "binary:logitraw"
+
+    return {
+        "max_depth": max_depth,
+        "n_estimators": n_estimators,
+        "learning_rate": learning_rate,
+        "subsample": subsample,
+        "colsample_bytree": colsample_bytree,
+        "min_child_weight": min_child_weight,
+        "gamma": gamma,
+        "reg_alpha": reg_alpha,
+        "reg_lambda": reg_lambda,
+        "objective": objective,
+    }
+
+
+def fit_xgb_classifier(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    *,
+    rng: np.random.Generator,
+    random_seed: int,
+):
+    num_class = int(np.unique(y_train).shape[0])
+    hp = sample_xgb_hyperparameters(rng, num_class=num_class)
+    xgb_model = xgb.XGBClassifier(
+        random_state=random_seed,
+        max_depth=hp["max_depth"],
+        n_estimators=hp["n_estimators"],
+        learning_rate=hp["learning_rate"],
+        subsample=hp["subsample"],
+        colsample_bytree=hp["colsample_bytree"],
+        min_child_weight=hp["min_child_weight"],
+        gamma=hp["gamma"],
+        reg_alpha=hp["reg_alpha"],
+        reg_lambda=hp["reg_lambda"],
+        objective=hp["objective"],
+        eval_metric="logloss",
+        n_jobs=1,
+    )
+    xgb_model.fit(X_train, y_train)
+    return xgb_model, hp
 
 
 def prepare_and_save_results(results: dict, args: argparse.Namespace, depth: int, fold_idx: int):
@@ -166,10 +233,6 @@ if __name__ == "__main__":
 
         X_train, y_train, X_val, y_val, X_test, y_test = data_factory.get_data(fold_idx=fold_idx)
 
-        # Train an XGBoost model as the source forest model for conjunction extraction (per fold)
-        xgb_model = xgb.XGBClassifier(random_state=args.random_seed)
-        xgb_model.fit(X_train, y_train)
-
         # Prepare DataFrames for ShapeFBT (it expects DF + column names)
         train_df, feature_cols, label_col = build_train_df(X_train, y_train, label_col="y")
         val_df, _, _ = build_train_df(X_val, y_val, label_col="y")
@@ -189,9 +252,12 @@ if __name__ == "__main__":
             best = {
                 "val_acc": -np.inf,
                 "params": None,
+                "xgb_params": None,
                 "train_acc": None,
                 "test_acc": None,
-                "elapsed_time": None,
+                "xgb_fit_time": None,
+                "shapefbt_fit_time": None,
+                "trial_elapsed_time": None,
             }
 
             start_fit = time.time()
@@ -200,6 +266,15 @@ if __name__ == "__main__":
                     break
 
                 hp = sample_hyperparameters(rng)
+                xgb_t1 = time.time()
+                xgb_model, xgb_hp = fit_xgb_classifier(
+                    X_train,
+                    y_train,
+                    rng=rng,
+                    random_seed=int(args.random_seed),
+                )
+                xgb_t2 = time.time()
+
                 model = ShapeFBT(
                     outer_tree_max_depth=outer_tree_max_depth,
                     inner_tree_max_depth=hp["inner_tree_max_depth"],
@@ -236,17 +311,29 @@ if __name__ == "__main__":
                     best = {
                         "val_acc": val_acc,
                         "params": hp,
+                        "xgb_params": xgb_hp,
                         "train_acc": train_acc,
                         "test_acc": test_acc,
-                        "elapsed_time": t2 - t1,
+                        "xgb_fit_time": xgb_t2 - xgb_t1,
+                        "shapefbt_fit_time": t2 - t1,
+                        "trial_elapsed_time": (xgb_t2 - xgb_t1) + (t2 - t1),
                     }
 
             results = {
                 "train_acc": best["train_acc"] if best["train_acc"] is not None else float("nan"),
                 "val_acc": best["val_acc"] if best["val_acc"] != -np.inf else float("nan"),
                 "test_acc": best["test_acc"] if best["test_acc"] is not None else float("nan"),
-                "elapsed_time": best["elapsed_time"] if best["elapsed_time"] is not None else float("nan"),
+                "elapsed_time": best["shapefbt_fit_time"] if best["shapefbt_fit_time"] is not None else float("nan"),
                 "best_params": best["params"],
+                "best_shapefbt_params": best["params"],
+                "best_xgb_params": best["xgb_params"],
+                "best_xgb_fit_time": best["xgb_fit_time"] if best["xgb_fit_time"] is not None else float("nan"),
+                "best_shapefbt_fit_time": best["shapefbt_fit_time"]
+                if best["shapefbt_fit_time"] is not None
+                else float("nan"),
+                "best_trial_elapsed_time": best["trial_elapsed_time"]
+                if best["trial_elapsed_time"] is not None
+                else float("nan"),
                 "depth_fit_time": time.time() - start_fit,
             }
 
