@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Virtual environments
+venv/
+
+# macOS
+.DS_Store
+
+# Test outputs (optional)
+tests/results/
