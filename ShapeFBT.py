@@ -154,8 +154,8 @@ class ShapeFBT():
             criterion=self.inner_tree_criterion,
         )
         splitting_points_one_feature =  {feat_idx: self.cs.splitting_points[feat_idx]} if feat_idx in self.cs.splitting_points else {}
-        print("the split points are:", splitting_points_one_feature)
-        print(self.cs.splitting_points)
+        # print("the split points are:", splitting_points_one_feature)
+        # print(self.cs.splitting_points)
         fbt.fit( 
             conj_set=conjunctions,
             splitting_points=splitting_points_one_feature,
@@ -189,7 +189,7 @@ class ShapeFBT():
         # Iterate over *columns* as separate features, regardless of feature_dict.
         # This preserves the original scalar splitting logic.
         for feat_idx, feat_col in enumerate(feature_cols):
-            print("Now trying to split for feat:", feat_col)
+            # print("Now trying to split for feat:", feat_col)
             
             fbt, result, left_con, right_cons = self._fit_one_feature(
                 conjunctions=conjunctions, 
@@ -239,7 +239,7 @@ class ShapeFBT():
         # then you call map to buckets which give you the L/R results -> 0/1 
 
         # ── Step 2: best-first TDIDT loop ────────────────────────────────
-        print('ShapeFBT: starting TDIDT loop ... (pls workk)')
+        # print('ShapeFBT: starting TDIDT loop ... (pls workk)')
         #X = train[feature_cols].values
         #y = train[label_col].values
 
@@ -255,7 +255,7 @@ class ShapeFBT():
         if feat_col is None:
             print('ShapeFBT: no valid split at root -- single-leaf tree.')
             return self
-        print("---------------------------STARTING ACTUAL LOOP ---------------")
+        # print("---------------------------STARTING ACTUAL LOOP ---------------")
         heap = []
         heapq.heappush(heap, (-result['impurity_decrease'], 0, feat_col, feat_idx, fbt, result, conjunction_split))
 
