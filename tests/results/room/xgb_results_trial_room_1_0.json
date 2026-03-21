@@ -1,0 +1,12 @@
+{
+  "model": "XGBoost",
+  "trial_id": "1",
+  "fold": "0",
+  "dataset": "room",
+  "random_seed": "43",
+  "base_seed": "42",
+  "train_acc": "0.998731",
+  "val_acc": "0.999013",
+  "test_acc": "0.995558",
+  "elapsed_time": "1.167190"
+}

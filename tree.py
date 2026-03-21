@@ -35,7 +35,7 @@ class Tree():
         #    The one with the highest information gain
         # 3. Information gain is calculated as the mean emtropy across the different feature dimensions
         if len(self.conjunctions) == 1 or self.max_depth == 0:
-            print("\t \t \t Reached leaf with conjunctions:")
+            # print("\t \t \t Reached leaf with conjunctions:")
             self.selected_feature = None
             self.left = None
             self.right = None
