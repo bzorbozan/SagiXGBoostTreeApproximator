@@ -15,6 +15,6 @@ module load python/3.11 scipy-stack
 module load tbb
 module load rust
 
-source ~/envs/optimalsgt/bin/activate
+source ~/envs/beliz_env/bin/activate
 
 task.run
