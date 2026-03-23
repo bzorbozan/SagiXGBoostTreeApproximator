@@ -1,7 +1,3 @@
-from data_utils import *
-from xgboost import XGBClassifier
-from ShapeFBT import ShapeFBT
-from sklearn.metrics import accuracy_score
 import signal
 import time
 import json
@@ -12,6 +8,11 @@ import os
 import pandas as pd # is this allowed????
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from data_utils import *
+from xgboost import XGBClassifier
+from ShapeFBT import ShapeFBT
+from sklearn.metrics import accuracy_score
 
 class TimeoutException(Exception):
     pass
