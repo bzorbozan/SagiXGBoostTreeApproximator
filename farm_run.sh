@@ -22,7 +22,7 @@ do
             do
                 # write to FARM1_TABLE
                 ((FARM1_COUNT++))
-                echo "$FARM1_COUNT python $HOME_DIR/runners/$FILE --dataset $dataset --fold $fold --trial-id $i --home-dir $HOME_DIR" >> $FARM1_TABLE 
+                echo "$FARM1_COUNT python $HOME_DIR/tests/$FILE --dataset $dataset --fold $fold --trial-id $i --home-dir $HOME_DIR" >> $FARM1_TABLE 
             done
         done
     done
