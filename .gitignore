@@ -10,3 +10,5 @@ venv/
 
 # Test outputs (optional)
 tests/results/
+
+data/
