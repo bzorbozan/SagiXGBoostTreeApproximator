@@ -10,3 +10,7 @@ venv/
 
 # Test outputs (optional) (for now ignore them)
 tests/results/
+tests/__pycache__/
+
+# ignore the unzipped results (from the farm run)
+results/
