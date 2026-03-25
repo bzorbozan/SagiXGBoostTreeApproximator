@@ -14,7 +14,7 @@ FARM1_COUNT=0
 
 for FILE in xgb_run_new.py shapefbt_run_new.py
 do
-    for dataset in room avila bank bean bidding eye-state fault htru magic occupancy page raisin rice segment skin wilt
+    for dataset in wilt htru bidding skin occupancy rice bank eye-state magic raisin
     do
         for i in $(seq 1 200)
         do

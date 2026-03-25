@@ -35,10 +35,10 @@ def sample_hyperparameters(rng):
     # NOTE: I added more hyperparams for XGB (to match the other one)
 
     # Max depth of each tree
-    xgb_max_depth = int(rng.integers(3, 9))
+    xgb_max_depth = int(rng.integers(2, 7))
  
     # Number of boosting rounds
-    xgb_n_estimators = int(rng.choice([50, 100, 250, 500, 750, 1000]))
+    xgb_n_estimators = int(rng.choice([50, 100, 250, 500]))
  
     # Learning rate (step size shrinkage)
     xgb_learning_rate = float(rng.choice([0.01, 0.05, 0.1, 0.2, 0.3]))

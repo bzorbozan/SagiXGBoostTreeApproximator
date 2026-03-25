@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32000M 
+#SBATCH --mem=48000M 
 #SBATCH --time=2:55:00
 #SBATCH --account=def-coheneld
 
@@ -15,6 +15,6 @@ module load python/3.11 scipy-stack
 module load tbb
 module load rust
 
-source ~/envs/beliz_env/bin/activate
+source ~/envs/intern_env/bin/activate
 
 task.run

@@ -25,10 +25,10 @@ def sample_hyperparameters(rng):
         dict: Sampled hyperparameters
     """
     # Max depth of each tree
-    max_depth = int(rng.integers(3, 9))
+    max_depth = int(rng.integers(2,7))
  
     # Number of boosting rounds
-    n_estimators = int(rng.choice([50, 100, 250, 500, 750, 1000]))
+    n_estimators = int(rng.choice([50, 100, 250, 500]))
  
     # Learning rate (step size shrinkage)
     learning_rate = float(rng.choice([0.01, 0.05, 0.1, 0.2, 0.3]))
