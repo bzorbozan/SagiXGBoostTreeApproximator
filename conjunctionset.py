@@ -74,7 +74,7 @@ class ConjunctionSet():
             i+=1
             self.filter() #Filter redundant conjunction according to the filtering strategy
             self.size_per_iteration.append(len(self.conjunctions))
-            print('Size at iteration '+str(i)+': '+str(len(self.conjunctions)))
+            # print('Size at iteration '+str(i)+': '+str(len(self.conjunctions)))
     def filter(self):
         """
         This method filters the current conjunction set according to the filtering strategy.
