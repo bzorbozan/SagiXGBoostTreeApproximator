@@ -1,6 +1,10 @@
 """
-ShapeFBT capability experiment: approximate a fixed high-complexity XGBoost target
-while varying only n_estimators. No random hyperparameter sampling.
+ShapeFBT capability experiment: approximate a fixed XGBoost target while varying only
+n_estimators. No random hyperparameter sampling.
+
+Fixed configuration (see make_xgb_classifier / make_shapefbt):
+  xgb_max_depth=6; learning_rate=0.1; subsample=1.0; colsample_bytree=1.0; (+ other pinned XGB params)
+  max_number_of_conjunctions=500; min_samples_split=10; outer/inner depth=6
 
 Metrics:
   - % recovered: agreement between ShapeFBT class predictions and XGBoost predictions
@@ -56,11 +60,11 @@ def make_xgb_classifier(
     random_state: int,
     y_train: np.ndarray,
 ) -> XGBClassifier:
-    """Fixed 'high complexity' XGBoost; only n_estimators and max_depth vary via args."""
+    """Pinned XGBoost target; only n_estimators (and optional CLI max_depth) vary."""
     return XGBClassifier(
         n_estimators=n_estimators,
         max_depth=max_depth,
-        learning_rate=0.3,
+        learning_rate=0.1,
         colsample_bytree=1.0,
         subsample=1.0,
         min_child_weight=1,
@@ -76,14 +80,14 @@ def make_xgb_classifier(
 
 
 def make_shapefbt() -> ShapeFBT:
-    """Fixed 'high capability' ShapeFBT (no random search)."""
+    """Pinned ShapeFBT approximator (no random search)."""
     return ShapeFBT(
         outer_tree_max_depth=6,
         inner_tree_max_depth=6,
         min_forest_size=5,
-        max_number_of_conjunctions=1000,
+        max_number_of_conjunctions=500,
         pruning_method=None,
-        min_samples_split=2,
+        min_samples_split=20,
         min_conjunctions_split=2,
         min_impurity_decrease=0.0,
         k=2,
@@ -185,7 +189,7 @@ def main():
         "--xgb-max-depth",
         type=int,
         default=6,
-        help="Tree depth for the target XGBoost model (6 or 7 per experiment design).",
+        help="Tree depth for the target XGBoost model (default 6 for this experiment).",
     )
     parser.add_argument(
         "--n-estimators",

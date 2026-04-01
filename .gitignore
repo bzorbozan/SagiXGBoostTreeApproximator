@@ -14,3 +14,5 @@ tests/__pycache__/
 
 # ignore the unzipped results (from the farm run)
 results/
+
+/data
