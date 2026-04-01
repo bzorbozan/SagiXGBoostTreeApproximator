@@ -34,10 +34,10 @@ METAJOB_ID=${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}
 
 # If you do not want each case to be computed inside a separate subdirectory, comment out the following two lines
 # and also comment out the line "cd .." below!
-mkdir -p RUN$ID
-cd RUN$ID
+# mkdir -p RUN$ID
+# cd RUN$ID
 
-echo "Case $ID:"
+# echo "Case $ID:"
 
 # Executing the command (a line from table.dat)
 # It's allowed to use more than one shell command (separated by semi-columns) on a single line
@@ -47,7 +47,7 @@ eval "$COMM"
 STATUS=$?
 
 # Comment out this line if not creating a seoarate subdirectory for each case:
-cd ..
+# cd ..
 
 # +++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 

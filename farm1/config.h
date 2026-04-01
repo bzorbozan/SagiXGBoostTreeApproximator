@@ -15,11 +15,11 @@ NWHOLE=40
 NJOBS_MAX=998
 
 # Minimum and maximum allowed runtimes for farm jobs (seconds):
-RUNTIME_MIN=30
+RUNTIME_MIN=2
 RUNTIME_MAX=3000000
 
 # Case is considered to fail if the actual runtime is shorter than this number of seconds:
-dt_failed=5
+dt_failed=2
 
 # The meta-job fails if first N_failed_max cases all fail:
 N_failed_max=5

@@ -1,3 +1,8 @@
+import sys
+import os
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 from data_utils import *
 from xgboost import XGBClassifier
 from FBT import FBT
@@ -8,10 +13,8 @@ import json
 import argparse
 import numpy as np
 import pandas as pd
-import sys
-import os
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 class TimeoutException(Exception):

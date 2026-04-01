@@ -4,11 +4,11 @@
 # post-processing job (when the job script file final.sh is present in the root farm directory).
 
 #  You have to replace Your_account_name below with the name of your account:
-#SBATCH -A Your_account_name
+#SBATCH --account=def-coheneld
 
-#SBATCH -t 0-00:20
-#SBATCH -N 1
-#SBATCH -n 1
+#SBATCH --time=0-00:20:00
+#SBATCH --cpus-per-task=1
+#SBATCH --mem=4000M
 
 # Don't change anything below this line
 
