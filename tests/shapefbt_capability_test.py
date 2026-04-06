@@ -3,8 +3,8 @@ ShapeFBT capability experiment: approximate a fixed XGBoost target while varying
 n_estimators. No random hyperparameter sampling.
 
 Fixed configuration (see make_xgb_classifier / make_shapefbt):
-  xgb_max_depth=6; learning_rate=0.1; subsample=1.0; colsample_bytree=1.0; (+ other pinned XGB params)
-  max_number_of_conjunctions=500; min_samples_split=10; outer/inner depth=6
+  xgb_max_depth=4; learning_rate=0.1; subsample=1.0; colsample_bytree=1.0; (+ other pinned XGB params)
+  max_number_of_conjunctions=500; min_samples_split=20; outer/inner depth=6
 
 Metrics:
   - % recovered: agreement between ShapeFBT class predictions and XGBoost predictions
@@ -174,7 +174,7 @@ def main():
         "--datasets",
         type=str,
         nargs="+",
-        default=["magic", "raisin", "bidding"],
+        default=["bank", "bidding", "htru", "occupancy", "rice", " skin", "wilt", "raisin", "magic"],
         help="Datasets to run (DataFactory_clf names). Default: magic raisin bidding.",
     )
     parser.add_argument(
@@ -188,14 +188,14 @@ def main():
     parser.add_argument(
         "--xgb-max-depth",
         type=int,
-        default=6,
-        help="Tree depth for the target XGBoost model (default 6 for this experiment).",
+        default=4,
+        help="Tree depth for the target XGBoost model (default 4 for faster runs).",
     )
     parser.add_argument(
         "--n-estimators",
         type=int,
         nargs="+",
-        default=[50, 100, 250, 500],
+        default=[10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         help="Independent variable: boosting rounds for the target XGB.",
     )
     parser.add_argument(

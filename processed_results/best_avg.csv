@@ -1,3 +1,4 @@
 model,train_acc,test_acc,n_leaves,generalization_gap,elapsed_time
+ShapeCART,0.825,0.814,,0.013,0.139
 ShapeFBT,0.943,0.935,,0.008,164.663
-XGBoost,0.973,0.948,,0.026,1.276
+XGBoost,0.973,0.948,,0.025,2.489

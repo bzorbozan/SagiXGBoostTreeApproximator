@@ -1,3 +1,7 @@
+"""
+Make sure you run this command in terminal before running this script: tar -xvzf results_name.tar.gz
+"""
+
 import argparse
 import json
 import os
@@ -5,6 +9,18 @@ import re
 
 import numpy as np
 import pandas as pd
+
+# Only ingest known sweep result JSONs (per-dataset folders under results/).
+_RESULT_JSON_PREFIXES = (
+    "xgb_results",
+    "shapefbt_results",
+    "shapecart_results",
+    #"rf_results",
+    #"sforest_results",
+)
+
+# Normalized names for models not listed in farm table.dat / status.txt; use JSON metrics as success signal.
+_MODELS_WITHOUT_FARM_SCHEDULE = frozenset({"shapecart"})
 
 
 def _normalize_model_name(name):
@@ -28,6 +44,8 @@ def _load_successful_run_keys(table_path, status_path):
     model_alias = {
         "xgb": "XGBoost",
         "shapefbt": "ShapeFBT",
+        "shapecart": "ShapeCART",
+        # sforest / rf: keys use script basename unless aliased to match JSON "model"
     }
 
     keys = set()
@@ -59,6 +77,21 @@ def _load_successful_run_keys(table_path, status_path):
     return keys
 
 
+def _has_real_accuracy_metrics(df: pd.DataFrame) -> pd.Series:
+    """
+    True where train/val/test accuracies are present and finite (not NaN/inf).
+    Failed runs often still write JSON with "nan" strings, same idea as excluding non-0 farm status.
+    """
+    train = pd.to_numeric(df["train_acc"], errors="coerce")
+    val = pd.to_numeric(df["val_acc"], errors="coerce")
+    test = pd.to_numeric(df["test_acc"], errors="coerce")
+
+    def _finite_series(s):
+        return s.notna() & ~s.isin([np.inf, -np.inf])
+
+    return _finite_series(train) & _finite_series(val) & _finite_series(test)
+
+
 def load_all_results(results_dir, dataset=None, delete_json=False):
     """Load all result JSON files and optionally merge with existing results.csv."""
     existing_csv = os.path.join(results_dir, "results.csv")
@@ -71,6 +104,8 @@ def load_all_results(results_dir, dataset=None, delete_json=False):
     for root, _, files in os.walk(walk_dir):
         for file in files:
             if not file.endswith(".json"):
+                continue
+            if not any(file.startswith(p) for p in _RESULT_JSON_PREFIXES):
                 continue
             path = os.path.join(root, file)
             try:
@@ -167,21 +202,32 @@ if __name__ == "__main__":
     df["trial_id"] = pd.to_numeric(df["trial_id"], errors="coerce")
     df["fold"] = pd.to_numeric(df["fold"], errors="coerce")
     # status.txt shows  0 = successful. 127 = timeout (dw about these), 137 = OOM for each run in table.dat. Here, we will only consider successful runs.
-    df = df[
-        df.apply(
-            lambda row: (
-                _normalize_model_name(row["model"]),
-                str(row["dataset"]),
-                int(row["trial_id"]) if pd.notna(row["trial_id"]) else -1,
-                int(row["fold"]) if pd.notna(row["fold"]) else -1,
-            )
-            in successful_run_keys,
-            axis=1,
-        )
-    ].copy()
-    print(f"Rows after status-based success filter: {len(df)}")
+    norm_model = df["model"].apply(_normalize_model_name)
+    tid = df["trial_id"].fillna(-1).astype(int)
+    fld = df["fold"].fillna(-1).astype(int)
+    ds = df["dataset"].astype(str)
+    in_farm_ok = pd.Series(
+        [
+            (a, b, c, d) in successful_run_keys
+            for a, b, c, d in zip(norm_model, ds, tid, fld)
+        ],
+        index=df.index,
+    )
+    # Models not in table.dat have no status 0 key; accept those rows only when metrics look real (like farm-fail -> NaN JSON).
+    no_farm_schedule = norm_model.isin(_MODELS_WITHOUT_FARM_SCHEDULE)
+    accepted_schedule = no_farm_schedule | in_farm_ok
+    n_before_metrics = int(accepted_schedule.sum())
+    df_candidate = df.loc[accepted_schedule].copy()
+    metrics_ok = _has_real_accuracy_metrics(df_candidate)
+    n_dropped_bad_metrics = int((~metrics_ok).sum())
+    df = df_candidate.loc[metrics_ok].copy()
+    print(
+        f"Rows after schedule filter (farm status 0 OR no-farm model list): {n_before_metrics}; "
+        f"dropped {n_dropped_bad_metrics} with missing/non-finite train/val/test_acc; "
+        f"remaining {len(df)}."
+    )
     if df.empty:
-        raise ValueError("No rows remain after filtering to successful runs.")
+        raise ValueError("No rows remain after filtering to successful runs / valid metrics.")
 
     if "generalization_gap" not in df.columns:
         df["generalization_gap"] = np.abs(df["train_acc"] - df["test_acc"])
@@ -194,13 +240,27 @@ if __name__ == "__main__":
         contree_mask = df["model"].astype(str).eq("ConTree")
         df.loc[contree_mask, "trial_id"] = df.loc[contree_mask, "max_depth"]
 
+    # ShapeCART filenames encode outer depth (args.depth); same trial_id can appear at several depths — do not merge those.
+    # AGGREGATE TRIAL ID FIX
+    is_shapecart = df["model"].astype(str).eq("ShapeCART")
+    df["_agg_trial"] = df["trial_id"].astype(str)
+    if "max_depth" in df.columns and is_shapecart.any():
+        md = df["max_depth"]
+        both = is_shapecart & md.notna()
+        df.loc[both, "_agg_trial"] = (
+            df.loc[both, "trial_id"].astype(int).astype(str)
+            + "_"
+            + md.loc[both].astype(int).astype(str)
+        )
+
     models = sorted(df["model"].dropna().astype(str).unique().tolist())
     datasets = sorted(df["dataset"].dropna().astype(str).unique().tolist())
     numeric_cols = ["train_acc", "val_acc", "test_acc", "n_leaves", "generalization_gap", "elapsed_time"]
     numeric_cols = [c for c in numeric_cols if c in df.columns]
 
-    df_mean = df.groupby(["model", "dataset", "trial_id"])[numeric_cols].mean().reset_index()
-    df_std = df.groupby(["model", "dataset", "trial_id"])[numeric_cols].std().reset_index()
+    # AGGREGATE TRIAL ID FIX
+    df_mean = df.groupby(["model", "dataset", "_agg_trial"])[numeric_cols].mean().reset_index()
+    df_std = df.groupby(["model", "dataset", "_agg_trial"])[numeric_cols].std().reset_index()
 
     best_idxs = df_mean.groupby(["dataset", "model"])["val_acc"].idxmax().dropna().astype(int)
     df_best = df_mean.loc[best_idxs].reset_index(drop=True)
