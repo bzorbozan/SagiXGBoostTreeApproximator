@@ -70,7 +70,10 @@ if __name__ == "__main__":
     parser.add_argument("--max-depth", type=int, default=6)
 
     args = parser.parse_args()
-    args.output_dir = os.path.join(args.home_dir, "results")
+    
+    args.output_dir = os.path.join(args.home_dir, "results_fbt_capability")
+    if not os.path.exists(args.output_dir):
+        os.makedirs(args.output_dir)
 
     # Define pinned hyperparameters for FBT and XGBoost
     hyperparams = {
