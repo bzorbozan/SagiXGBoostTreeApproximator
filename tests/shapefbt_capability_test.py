@@ -24,6 +24,7 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -120,11 +121,14 @@ def run_one(
         y_train=y_train,
     )
 
+    print("     stage: fit xgboost ...")
     t0 = time.perf_counter()
     xgb_model.fit(X_train, y_train)
     xgb_fit_s = time.perf_counter() - t0
+    print(f"     stage: fit xgboost done ({xgb_fit_s:.2f}s)")
 
     model = make_shapefbt()
+    print("     stage: fit shapefbt ...")
     t1 = time.perf_counter()
     model.fit(
         train_df,
@@ -134,14 +138,18 @@ def run_one(
         feature_dict=feature_dict,
     )
     shape_fit_s = time.perf_counter() - t1
+    print(f"     stage: fit shapefbt done ({shape_fit_s:.2f}s)")
 
+    print("     stage: predict xgb ...")
     xgb_train = xgb_model.predict(X_train)
     xgb_val = xgb_model.predict(X_val)
     xgb_test = xgb_model.predict(X_test)
 
+    print("     stage: predict shapefbt (train/val/test) ...")
     shape_train, _ = model.predict_Xy(train_df[feature_cols])
     shape_val, _ = model.predict_Xy(val_df[feature_cols])
     shape_test, _ = model.predict_Xy(test_df[feature_cols])
+    print("     stage: predict shapefbt done")
 
     def recovered_pct(a, b):
         return float(100.0 * np.mean(a == b))
@@ -174,7 +182,7 @@ def main():
         "--datasets",
         type=str,
         nargs="+",
-        default=["bank", "bidding", "htru", "occupancy", "rice", " skin", "wilt", "raisin", "magic"],
+        default=["magic", "raisin", "bidding"],
         help="Datasets to run (DataFactory_clf names). Default: magic raisin bidding.",
     )
     parser.add_argument(
@@ -217,6 +225,12 @@ def main():
         home, "results", "capability", "shapefbt_capability.csv"
     )
     os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    print(f"Output CSV: {out_csv}")
+    print(
+        "Config: "
+        f"datasets={args.datasets} folds={args.folds} "
+        f"n_estimators={args.n_estimators} xgb_max_depth={args.xgb_max_depth}"
+    )
 
     fieldnames = [
         "dataset",
@@ -241,6 +255,32 @@ def main():
         "time_total_fit_s",
     ]
 
+    def _maybe_numpy_cache_error(e: BaseException) -> bool:
+        msg = str(e)
+        return isinstance(e, ModuleNotFoundError) and ("numpy._core" in msg or "numpy._core" in getattr(e, "name", ""))
+
+    def make_data_factory(dataset_name: str) -> DataFactory_clf:
+        """
+        Construct DataFactory_clf, and if a cached tar.gz was produced under a different
+        NumPy major version (common 'numpy._core' unpickle error), delete the cache and retry.
+        """
+        cache_dir = os.path.join(home, "data")
+        cache_file = os.path.join(cache_dir, f"{dataset_name}.tar.gz")
+        try:
+            return DataFactory_clf(dataset_name, cache_dir=cache_dir)
+        except ModuleNotFoundError as e:
+            if _maybe_numpy_cache_error(e) and os.path.isfile(cache_file):
+                print(
+                    f"Cache load failed for dataset={dataset_name} due to NumPy version mismatch. "
+                    f"Deleting cache and rebuilding: {cache_file}"
+                )
+                try:
+                    os.remove(cache_file)
+                except OSError:
+                    pass
+                return DataFactory_clf(dataset_name, cache_dir=cache_dir)
+            raise
+
     write_header = not os.path.isfile(out_csv)
     with open(out_csv, "a", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -248,18 +288,19 @@ def main():
             writer.writeheader()
 
         for dataset_name in args.datasets:
-            data_factory = DataFactory_clf(
-                dataset_name, cache_dir=os.path.join(home, "data")
-            )
+            print(f"\n=== Dataset: {dataset_name} ===")
+            data_factory = make_data_factory(dataset_name)
             feature_dict = getattr(data_factory, "feature_dict", None)
 
             for fold_idx in args.folds:
+                print(f"-- Fold: {fold_idx} (seed={args.base_seed + fold_idx})")
                 X_train, y_train, X_val, y_val, X_test, y_test = data_factory.get_data(
                     fold_idx=fold_idx
                 )
                 random_state = args.base_seed + fold_idx
 
                 for n_est in args.n_estimators:
+                    print(f"  -> Run: n_estimators={n_est}")
                     metrics = run_one(
                         X_train=X_train,
                         y_train=y_train,
@@ -283,7 +324,7 @@ def main():
                     writer.writerow(row)
                     f.flush()
                     print(
-                        f"dataset={dataset_name} fold={fold_idx} n_estimators={n_est} "
+                        f"     done: dataset={dataset_name} fold={fold_idx} n_estimators={n_est} "
                         f"pct_recovered_test={metrics['pct_recovered_test']:.2f}% "
                         f"shape_fit_s={metrics['time_shapefbt_fit_s']:.2f}"
                     )

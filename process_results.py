@@ -1,5 +1,29 @@
 """
-Make sure you run this command in terminal before running this script: tar -xvzf results_name.tar.gz
+Aggregate experiment JSON results into summary CSVs.
+
+Before running, make sure result archives are extracted, e.g.:
+    tar -xvzf results_name.tar.gz
+
+Drop / filtering behavior (intentional):
+1) File-level inclusion:
+   - Only JSON files whose names start with configured prefixes in `_RESULT_JSON_PREFIXES` are loaded.
+   - Other JSON files are ignored to avoid mixing unrelated artifacts.
+2) Parse/read failures:
+   - Unreadable or invalid JSON files are skipped.
+3) Duplicate run rows:
+   - After loading, duplicate rows are dropped using stable run-identifying columns
+     (`model`, `dataset`, `trial_id`, `fold`, `max_depth`, `random_seed`, `base_seed` when available).
+4) Optional exact FBT file dedupe:
+   - `--remove_exact_fbt_duplicates` removes later `fbt_results_*.json` files whose full JSON payload
+     exactly matches an earlier one.
+5) Success/schedule filter:
+   - Keep rows with status==0 keys from farm table/status mapping, OR rows on explicit/fallback
+     metric-based paths (models in `_MODELS_FORCE_METRIC_SUCCESS` or models with no successful keys).
+6) Metrics validity filter:
+   - Drop rows where `train_acc`, `val_acc`, or `test_acc` are missing/non-finite (NaN/inf).
+7) Winner selection:
+   - Per `(dataset, model)`, choose winner as the trial with highest `val_acc`.
+   - Groups without valid `val_acc` cannot produce a winner.
 """
 
 import argparse
@@ -15,19 +39,21 @@ _RESULT_JSON_PREFIXES = (
     "xgb_results",
     "shapefbt_results",
     "shapecart_results",
+    "fbt_results",
     #"rf_results",
     #"sforest_results",
 )
 
-# Normalized names for models not listed in farm table.dat / status.txt; use JSON metrics as success signal.
-_MODELS_WITHOUT_FARM_SCHEDULE = frozenset({"shapecart"})
+# Normalized names for models that must use metric-based success (NaN/inf filtering),
+# not farm status keys. `fbt` is forced here because `status.txt` does not track sagi runs.
+_MODELS_FORCE_METRIC_SUCCESS = frozenset({"shapecart", "fbt"})
 
 
 def _normalize_model_name(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
 
-def _load_successful_run_keys(table_path, status_path):
+def _load_successful_run_keys(table_paths, status_path):
     """
     Build successful run keys from farm scheduler files.
     Returns set of tuples: (normalized_model, dataset, trial_id, fold)
@@ -45,34 +71,37 @@ def _load_successful_run_keys(table_path, status_path):
         "xgb": "XGBoost",
         "shapefbt": "ShapeFBT",
         "shapecart": "ShapeCART",
+        "sagifbt": "FBT",
         # sforest / rf: keys use script basename unless aliased to match JSON "model"
     }
 
     keys = set()
-    with open(table_path, "r") as f:
-        for line in f:
-            parts = line.strip().split()
-            if not parts:
-                continue
-            run_id = int(parts[0])
-            status = status_map.get(run_id)
-            if status != "0":
-                continue
+    for table_path in table_paths:
+        # Per table, only status==0 runs contribute success keys.
+        with open(table_path, "r") as f:
+            for line in f:
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                run_id = int(parts[0])
+                status = status_map.get(run_id)
+                if status != "0":
+                    continue
 
-            dataset_match = re.search(r"--dataset\s+([^\s]+)", line)
-            trial_match = re.search(r"--trial-id\s+([^\s]+)", line)
-            fold_match = re.search(r"--fold\s+([^\s]+)", line)
-            script_match = re.search(r"/tests/([^/\s]+)_run_new\.py", line)
+                dataset_match = re.search(r"--dataset\s+([^\s]+)", line)
+                trial_match = re.search(r"--trial-id\s+([^\s]+)", line)
+                fold_match = re.search(r"--fold\s+([^\s]+)", line)
+                script_match = re.search(r"/tests/([^/\s]+)_run_new\.py", line)
 
-            if not (dataset_match and trial_match and fold_match and script_match):
-                continue
+                if not (dataset_match and trial_match and fold_match and script_match):
+                    continue
 
-            script_prefix = script_match.group(1)
-            model_name = model_alias.get(script_prefix, script_prefix)
-            dataset = dataset_match.group(1)
-            trial_id = int(float(trial_match.group(1)))
-            fold = int(float(fold_match.group(1)))
-            keys.add((_normalize_model_name(model_name), dataset, trial_id, fold))
+                script_prefix = script_match.group(1)
+                model_name = model_alias.get(script_prefix, script_prefix)
+                dataset = dataset_match.group(1)
+                trial_id = int(float(trial_match.group(1)))
+                fold = int(float(fold_match.group(1)))
+                keys.add((_normalize_model_name(model_name), dataset, trial_id, fold))
 
     return keys
 
@@ -104,8 +133,10 @@ def load_all_results(results_dir, dataset=None, delete_json=False):
     for root, _, files in os.walk(walk_dir):
         for file in files:
             if not file.endswith(".json"):
+                # Drop non-JSON artifacts early.
                 continue
             if not any(file.startswith(p) for p in _RESULT_JSON_PREFIXES):
+                # Drop JSON files outside the configured experiment families.
                 continue
             path = os.path.join(root, file)
             try:
@@ -115,6 +146,7 @@ def load_all_results(results_dir, dataset=None, delete_json=False):
                 if delete_json:
                     os.remove(path)
             except (json.JSONDecodeError, OSError) as exc:
+                # Drop unreadable/invalid payloads; continue with remaining files.
                 print(f"Skipping unreadable file {path}: {exc}")
 
     print(f"Loaded {len(results)} result files.")
@@ -150,7 +182,7 @@ def load_all_results(results_dir, dataset=None, delete_json=False):
     else:
         df = df_new
 
-    # Deduplicate by stable identifiers that exist in the data.
+    # Drop duplicate run rows by stable identifiers that exist in the merged table.
     dedupe_cols = [
         "model",
         "dataset",
@@ -171,17 +203,58 @@ def load_all_results(results_dir, dataset=None, delete_json=False):
     return df
 
 
+def remove_exact_duplicate_fbt_files(results_dir, dataset=None):
+    """
+    Remove exact duplicate FBT result JSON files (same full JSON payload).
+    Keeps the first path in sorted order; deletes later duplicates.
+    """
+    walk_dir = os.path.join(results_dir, dataset) if dataset else results_dir
+    seen = {}
+    removed = 0
+    for root, _, files in os.walk(walk_dir):
+        for file in sorted(files):
+            if not (file.endswith(".json") and file.startswith("fbt_results_")):
+                continue
+            path = os.path.join(root, file)
+            try:
+                with open(path, "r") as f:
+                    data = json.load(f)
+                fingerprint = json.dumps(data, sort_keys=True, separators=(",", ":"))
+            except (json.JSONDecodeError, OSError) as exc:
+                print(f"Skipping unreadable FBT file {path}: {exc}")
+                continue
+            if fingerprint in seen:
+                # Drop exact duplicate payload; keep earliest path encountered.
+                os.remove(path)
+                removed += 1
+            else:
+                seen[fingerprint] = path
+    print(f"Removed {removed} exact duplicate FBT result files.")
+    return removed
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dir", default="results", help="Directory with per-dataset JSON results")
     parser.add_argument("--dataset", default=None, help="Optional dataset subfolder to process")
     parser.add_argument("--output_dir", default="processed_results", help="Directory to save summary CSVs")
     parser.add_argument("--delete_json", action="store_true", help="Delete JSON files after reading")
-    parser.add_argument("--table_path", default="farm1/table.dat", help="Path to farm table.dat")
+    parser.add_argument(
+        "--table_paths",
+        default="farm1/table.dat,farm1/sagi_table.dat",
+        help="Comma-separated paths to farm table.dat files",
+    )
     parser.add_argument("--status_path", default="farm1/status.txt", help="Path to farm status.txt")
+    parser.add_argument(
+        "--remove_exact_fbt_duplicates",
+        action="store_true",
+        help="Delete exact duplicate fbt_results_ JSON files before processing",
+    )
     args = parser.parse_args()
 
     os.makedirs(args.output_dir, exist_ok=True)
+    if args.remove_exact_fbt_duplicates:
+        remove_exact_duplicate_fbt_files(args.dir, dataset=args.dataset)
     df = load_all_results(args.dir, dataset=args.dataset, delete_json=args.delete_json)
 
     if df.empty:
@@ -196,9 +269,10 @@ if __name__ == "__main__":
     if "fold" not in df.columns:
         raise ValueError("Missing required column 'fold' in result JSONs for status filtering.")
     # CHANGE FROM ORIGINAL - WE ONLY CARE ABOUT SUCCESSFUL RUNS!!
-    successful_run_keys = _load_successful_run_keys(args.table_path, args.status_path)
+    table_paths = [p.strip() for p in args.table_paths.split(",") if p.strip()]
+    successful_run_keys = _load_successful_run_keys(table_paths, args.status_path)
     if not successful_run_keys:
-        raise ValueError("No successful runs found from status file. Check --table_path and --status_path.")
+        raise ValueError("No successful runs found from status file(s). Check --table_paths and --status_path.")
     df["trial_id"] = pd.to_numeric(df["trial_id"], errors="coerce")
     df["fold"] = pd.to_numeric(df["fold"], errors="coerce")
     # status.txt shows  0 = successful. 127 = timeout (dw about these), 137 = OOM for each run in table.dat. Here, we will only consider successful runs.
@@ -213,16 +287,20 @@ if __name__ == "__main__":
         ],
         index=df.index,
     )
-    # Models not in table.dat have no status 0 key; accept those rows only when metrics look real (like farm-fail -> NaN JSON).
-    no_farm_schedule = norm_model.isin(_MODELS_WITHOUT_FARM_SCHEDULE)
+    # Schedule filter drop:
+    # - Keep farm status==0 keys.
+    # - Also keep explicit/fallback metric-based models to avoid hard-dropping families without reliable status.
+    models_with_success_keys = {m for m, _, _, _ in successful_run_keys}
+    no_farm_schedule = norm_model.isin(_MODELS_FORCE_METRIC_SUCCESS) | ~norm_model.isin(models_with_success_keys)
     accepted_schedule = no_farm_schedule | in_farm_ok
     n_before_metrics = int(accepted_schedule.sum())
     df_candidate = df.loc[accepted_schedule].copy()
     metrics_ok = _has_real_accuracy_metrics(df_candidate)
+    # Metric validity drop: remove rows with NaN/inf train/val/test metrics.
     n_dropped_bad_metrics = int((~metrics_ok).sum())
     df = df_candidate.loc[metrics_ok].copy()
     print(
-        f"Rows after schedule filter (farm status 0 OR no-farm model list): {n_before_metrics}; "
+        f"Rows after schedule filter (farm status 0 OR no-farm fallback): {n_before_metrics}; "
         f"dropped {n_dropped_bad_metrics} with missing/non-finite train/val/test_acc; "
         f"remaining {len(df)}."
     )
@@ -262,6 +340,7 @@ if __name__ == "__main__":
     df_mean = df.groupby(["model", "dataset", "_agg_trial"])[numeric_cols].mean().reset_index()
     df_std = df.groupby(["model", "dataset", "_agg_trial"])[numeric_cols].std().reset_index()
 
+    # Winner selection drop (implicit): groups with no valid val_acc produce NaN idx and are excluded.
     best_idxs = df_mean.groupby(["dataset", "model"])["val_acc"].idxmax().dropna().astype(int)
     df_best = df_mean.loc[best_idxs].reset_index(drop=True)
     df_best_std = df_std.loc[best_idxs].reset_index(drop=True)

@@ -30,12 +30,14 @@ _RESULT_JSON_PREFIXES = (
     "xgb_results",
     "shapefbt_results",
     "shapecart_results",
+    "fbt_results",
     #"rf_results",
     #"sforest_results",
 )
 
-# Normalized names for models not listed in farm table.dat / status.txt; use JSON metrics as success signal.
-_MODELS_WITHOUT_FARM_SCHEDULE = frozenset({"shapecart"})
+# Normalized names for models that must use metric-based success (NaN/inf filtering),
+# not farm status keys. `fbt` is forced here because `status.txt` does not track sagi runs.
+_MODELS_FORCE_METRIC_SUCCESS = frozenset({"shapecart", "fbt"})
 
 # JSON keys treated as run metadata / metrics (not copied into hyperparameters for non-RNG models)
 _JSON_NON_HP_KEYS = {
@@ -57,13 +59,14 @@ _JSON_NON_HP_KEYS = {
 
 _sample_xgb = None
 _sample_shapefbt = None
+_sample_fbt = None
 
 
 def _normalize_model_name(name):
     return re.sub(r"[^a-z0-9]", "", str(name).lower())
 
 
-def _load_successful_run_keys(table_path: Path, status_path: Path):
+def _load_successful_run_keys(table_paths, status_path: Path):
     """
     Build successful run keys from farm scheduler files.
     Returns set of tuples: (normalized_model, dataset, trial_id, fold)
@@ -81,32 +84,34 @@ def _load_successful_run_keys(table_path: Path, status_path: Path):
         "xgb": "XGBoost",
         "shapefbt": "ShapeFBT",
         "shapecart": "ShapeCART",
+        "sagifbt": "FBT",
     }
 
     keys = set()
-    with open(table_path, "r", encoding="utf-8") as f:
-        for line in f:
-            parts = line.strip().split()
-            if not parts:
-                continue
-            run_id = int(parts[0])
-            status = status_map.get(run_id)
-            if status != "0":
-                continue
+    for table_path in table_paths:
+        with open(table_path, "r", encoding="utf-8") as f:
+            for line in f:
+                parts = line.strip().split()
+                if not parts:
+                    continue
+                run_id = int(parts[0])
+                status = status_map.get(run_id)
+                if status != "0":
+                    continue
 
-            dataset_match = re.search(r"--dataset\s+([^\s]+)", line)
-            trial_match = re.search(r"--trial-id\s+([^\s]+)", line)
-            fold_match = re.search(r"--fold\s+([^\s]+)", line)
-            script_match = re.search(r"/tests/([^/\s]+)_run_new\.py", line)
-            if not (dataset_match and trial_match and fold_match and script_match):
-                continue
+                dataset_match = re.search(r"--dataset\s+([^\s]+)", line)
+                trial_match = re.search(r"--trial-id\s+([^\s]+)", line)
+                fold_match = re.search(r"--fold\s+([^\s]+)", line)
+                script_match = re.search(r"/tests/([^/\s]+)_run_new\.py", line)
+                if not (dataset_match and trial_match and fold_match and script_match):
+                    continue
 
-            script_prefix = script_match.group(1)
-            model_name = model_alias.get(script_prefix, script_prefix)
-            dataset = dataset_match.group(1)
-            trial_id = int(float(trial_match.group(1)))
-            fold = int(float(fold_match.group(1)))
-            keys.add((_normalize_model_name(model_name), dataset, trial_id, fold))
+                script_prefix = script_match.group(1)
+                model_name = model_alias.get(script_prefix, script_prefix)
+                dataset = dataset_match.group(1)
+                trial_id = int(float(trial_match.group(1)))
+                fold = int(float(fold_match.group(1)))
+                keys.add((_normalize_model_name(model_name), dataset, trial_id, fold))
 
     return keys
 
@@ -122,16 +127,16 @@ def _has_real_accuracy_metrics(df: pd.DataFrame) -> pd.Series:
     return _finite_series(train) & _finite_series(val) & _finite_series(test)
 
 
-def _apply_consistent_success_filter(df: pd.DataFrame, table_path: Path, status_path: Path) -> pd.DataFrame:
-    """Match process_results.py success filtering behavior."""
+def _compute_filter_masks(df: pd.DataFrame, table_paths, status_path: Path):
+    """Compute schedule and metric-validity masks used by filtering."""
     required = ["model", "dataset", "trial_id", "fold", "train_acc", "val_acc", "test_acc"]
     missing = [c for c in required if c not in df.columns]
     if missing:
         raise ValueError(f"Missing required columns for success filtering: {missing}")
 
-    successful_run_keys = _load_successful_run_keys(table_path, status_path)
+    successful_run_keys = _load_successful_run_keys(table_paths, status_path)
     if not successful_run_keys:
-        raise ValueError("No successful runs found from status file. Check --table_path and --status_path.")
+        raise ValueError("No successful runs found from status file(s). Check --table_paths and --status_path.")
 
     norm_model = df["model"].apply(_normalize_model_name)
     tid = pd.to_numeric(df["trial_id"], errors="coerce").fillna(-1).astype(int)
@@ -142,13 +147,74 @@ def _apply_consistent_success_filter(df: pd.DataFrame, table_path: Path, status_
         [(a, b, c, d) in successful_run_keys for a, b, c, d in zip(norm_model, ds, tid, fld)],
         index=df.index,
     )
-    no_farm_schedule = norm_model.isin(_MODELS_WITHOUT_FARM_SCHEDULE)
+    models_with_success_keys = {m for m, _, _, _ in successful_run_keys}
+    no_farm_schedule = norm_model.isin(_MODELS_FORCE_METRIC_SUCCESS) | ~norm_model.isin(models_with_success_keys)
     accepted_schedule = no_farm_schedule | in_farm_ok
 
     df_candidate = df.loc[accepted_schedule].copy()
     metrics_ok = _has_real_accuracy_metrics(df_candidate)
-    filtered = df_candidate.loc[metrics_ok].copy()
+    bad_metrics_mask = pd.Series(False, index=df.index)
+    bad_metrics_mask.loc[df_candidate.index] = ~metrics_ok
+    return accepted_schedule, bad_metrics_mask
+
+
+def _apply_consistent_success_filter(df: pd.DataFrame, table_paths, status_path: Path) -> pd.DataFrame:
+    """Match process_results.py success filtering behavior."""
+    accepted_schedule, bad_metrics_mask = _compute_filter_masks(df, table_paths, status_path)
+    filtered = df.loc[accepted_schedule & ~bad_metrics_mask].copy()
     return filtered
+
+
+def _print_drop_reasons(df_before: pd.DataFrame, table_paths, status_path: Path) -> None:
+    """Print per-model drop counts split by reason."""
+    if df_before.empty:
+        print("Drop reasons: no rows were loaded before filtering.")
+        return
+
+    accepted_schedule, bad_metrics_mask = _compute_filter_masks(df_before, table_paths, status_path)
+    schedule_drop = ~accepted_schedule
+    metric_drop = bad_metrics_mask
+
+    models = sorted(df_before["model"].astype(str).unique().tolist())
+    print("\nDropped rows by model and reason:")
+    print("model,dropped_schedule_not_success,dropped_bad_metrics,total_dropped")
+    for model_name in models:
+        model_mask = df_before["model"].astype(str).eq(model_name)
+        n_schedule = int((schedule_drop & model_mask).sum())
+        n_metric = int((metric_drop & model_mask).sum())
+        n_total = n_schedule + n_metric
+        print(f"{model_name},{n_schedule},{n_metric},{n_total}")
+
+    print(
+        "Dropped totals: "
+        f"schedule_not_success={int(schedule_drop.sum())}, "
+        f"bad_metrics={int(metric_drop.sum())}, "
+        f"overall={int((schedule_drop | metric_drop).sum())}"
+    )
+
+
+def _print_summary(df_before: pd.DataFrame, df_after: pd.DataFrame) -> None:
+    """Print compact per-model filtering summary."""
+    if df_before.empty:
+        print("Summary: no rows were loaded before filtering.")
+        return
+
+    before_counts = df_before["model"].astype(str).value_counts(dropna=False)
+    after_counts = (
+        df_after["model"].astype(str).value_counts(dropna=False)
+        if not df_after.empty
+        else pd.Series(dtype="int64")
+    )
+    models = sorted(set(before_counts.index).union(set(after_counts.index)))
+
+    print("\nSummary by model:")
+    print("model,before,after,dropped")
+    for m in models:
+        b = int(before_counts.get(m, 0))
+        a = int(after_counts.get(m, 0))
+        print(f"{m},{b},{a},{b-a}")
+
+    print(f"Total rows: before={len(df_before)}, after={len(df_after)}, dropped={len(df_before)-len(df_after)}")
 
 # AGGREGATE TRIAL ID FIX
 def _add_aggregated_trial_id(df: pd.DataFrame) -> pd.DataFrame:
@@ -267,6 +333,13 @@ def _get_sample_shapefbt():
     return _sample_shapefbt
 
 
+def _get_sample_fbt():
+    global _sample_fbt
+    if _sample_fbt is None:
+        _sample_fbt = _load_sampler_module("sagifbt_run_new.py")
+    return _sample_fbt
+
+
 def _coerce_scalar(v):
     if isinstance(v, str):
         try:
@@ -295,6 +368,8 @@ def reconstruct_hyperparameters(model: str, base_seed: int, trial_id: int, data:
         return _get_sample_xgb()(rng)
     if model == "ShapeFBT":
         return _get_sample_shapefbt()(rng)
+    if model == "FBT":
+        return _get_sample_fbt()(rng)
     if model == "ShapeCART":
         hp = sample_shapecart_hyperparameters(rng)
         md = data.get("max_depth")
@@ -357,8 +432,18 @@ def main():
         default=ROOT / "results_with_hyperparameters.csv",
         help="Output CSV path (default: ./results_with_hyperparameters.csv)",
     )
-    parser.add_argument("--table_path", type=Path, default=ROOT / "farm1/table.dat", help="Path to farm table.dat")
+    parser.add_argument(
+        "--table_paths",
+        default="farm1/table.dat,farm1/sagi_table.dat",
+        help="Comma-separated paths to farm table.dat files",
+    )
     parser.add_argument("--status_path", type=Path, default=ROOT / "farm1/status.txt", help="Path to farm status.txt")
+    parser.add_argument("--print_summary", action="store_true", help="Print per-model before/after filtering summary")
+    parser.add_argument(
+        "--print_drop_reasons",
+        action="store_true",
+        help="Print per-model drop reasons (schedule/status vs bad metrics)",
+    )
     args = parser.parse_args()
 
     results_dir = args.results_dir.resolve()
@@ -372,8 +457,14 @@ def main():
         sys.exit(1)
 
     df = pd.DataFrame(rows)
-    df = _apply_consistent_success_filter(df, args.table_path, args.status_path)
+    df_before_filter = df.copy()
+    table_paths = [Path(p.strip()) for p in args.table_paths.split(",") if p.strip()]
+    if args.print_drop_reasons:
+        _print_drop_reasons(df_before_filter, table_paths, args.status_path)
+    df = _apply_consistent_success_filter(df, table_paths, args.status_path)
     df = _add_aggregated_trial_id(df)
+    if args.print_summary:
+        _print_summary(df_before_filter, df)
     if df.empty:
         print("No rows remain after filtering to successful runs / valid metrics.", file=sys.stderr)
         sys.exit(1)
