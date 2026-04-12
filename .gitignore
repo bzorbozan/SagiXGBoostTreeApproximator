@@ -19,3 +19,5 @@ results/
 
 # from running unzip_results.sh (unzips results in the zipped_results folder)
 all_results/
+
+capability_results/

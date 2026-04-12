@@ -3,6 +3,9 @@
 # Create the output directory if it doesn't exist
 mkdir -p all_results
 
+# Clear everything in all_results folder (refresh - we unpack all files)
+rm -rf all_results/*
+
 # Loop through every .tar.gz file inside the zipped_files folder
 for f in zipped_results/*.tar.gz; do
     # Get just the filename (e.g., "data.tar.gz")

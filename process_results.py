@@ -159,7 +159,7 @@ def load_results(shapecart_source, external_csv_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--output_dir", default="processed_results")
-    parser.add_argument("--shapecart_source", choices=["zipped_files", "external_csv"], default="external_csv")
+    parser.add_argument("--shapecart_source", choices=["zipped_files", "external_csv"], default="zipped_files")
     parser.add_argument("--external_csv_path", default="external_results.csv")
     args = parser.parse_args()
 
