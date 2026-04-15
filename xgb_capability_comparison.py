@@ -12,7 +12,6 @@ Example:
     --n-estimators 10 20 40 60 80 100 \\
     --max-depth 3 4 5 \\
     --trial-id 0
-python3 xgb_capability_comparison.py --home-dir . --datasets magic raisin bidding --folds 0 1 2 3 4 --n-estimators 10 20 40 60 80 100 --max-depth 3 4 5 --trial-id 0
 """
 
 from __future__ import annotations
@@ -152,21 +151,48 @@ CSV_FIELDS = [
 
 
 def append_csv_row(path: str, row: Dict[str, Any]) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+    """
+    Append one row and flush + fsync so partial runs (crash/kill) keep all rows
+    written so far on disk.
+    """
+    path = os.path.abspath(path)
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
     exists = os.path.isfile(path)
     with open(path, "a", newline="", encoding="utf-8") as f:
-        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS, extrasaction="ignore")
         if not exists:
             w.writeheader()
         w.writerow(row)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            pass
 
 
 def run_experiment(args: argparse.Namespace) -> None:
+    home_dir = os.path.abspath(os.path.expanduser(args.home_dir))
+
     out_path = args.output_csv
     if not out_path:
         out_path = os.path.join(
-            args.home_dir, "processed_capability_results", "xgb_capability_comparison.csv"
+            home_dir, "processed_capability_results", "xgb_capability_comparison.csv"
         )
+    else:
+        out_path = os.path.abspath(os.path.expanduser(out_path))
+
+    if args.overwrite_csv and os.path.isfile(out_path):
+        os.remove(out_path)
+        print(f"Removed existing CSV (--overwrite-csv): {out_path}")
+
+    rows_before = 0
+    if os.path.isfile(out_path):
+        try:
+            rows_before = len(pd.read_csv(out_path))
+        except (OSError, ValueError, pd.errors.ParserError):
+            rows_before = 0
 
     trial_id = args.trial_id
     base_seed = args.base_seed
@@ -183,7 +209,7 @@ def run_experiment(args: argparse.Namespace) -> None:
 
     for dataset in args.datasets:
         data_factory = DataFactory_clf(
-            dataset, cache_dir=os.path.join(args.home_dir, "data")
+            dataset, cache_dir=os.path.join(home_dir, "data")
         )
         for fold in args.folds:
             X_train, y_train, X_val, y_val, X_test, y_test = data_factory.get_data(
@@ -241,7 +267,32 @@ def run_experiment(args: argparse.Namespace) -> None:
 
                     append_csv_row(out_path, row)
 
-    print(f"Wrote (appended) rows to {os.path.abspath(out_path)}")
+    # Sanity check: one row per (dataset, fold, n_estimators, max_depth) for this run
+    try:
+        check = pd.read_csv(out_path)
+        actual_total = len(check)
+        added = actual_total - rows_before
+        print(f"CSV path: {out_path}")
+        print(
+            f"Rows in file: {actual_total} "
+            f"(+{added} this run; expected +{total_runs} this run)"
+        )
+        if added < total_runs:
+            print(
+                "Warning: fewer new rows than expected — run interrupted or an error "
+                "occurred mid-loop. Use --overwrite-csv and re-run for a full clean grid."
+            )
+        dup = check.duplicated(
+            subset=["dataset", "fold", "n_estimators", "max_depth"], keep=False
+        )
+        if dup.any():
+            print(
+                f"Warning: {dup.sum()} rows participate in duplicate "
+                "(dataset, fold, n_estimators, max_depth) keys — use --overwrite-csv "
+                "for a single clean run."
+            )
+    except Exception as e:
+        print(f"Finished run (could not verify CSV: {e})")
 
 
 def main() -> None:
@@ -312,9 +363,15 @@ def main() -> None:
         default="",
         help="Output CSV path. Default: <home-dir>/processed_capability_results/xgb_capability_comparison.csv",
     )
+    parser.add_argument(
+        "--overwrite-csv",
+        action="store_true",
+        help="Delete existing output CSV before running (recommended for a full clean grid).",
+    )
 
     args = parser.parse_args()
     args.output_csv = args.output_csv.strip()
+    args.home_dir = os.path.abspath(os.path.expanduser(args.home_dir))
     run_experiment(args)
 
 

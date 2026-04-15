@@ -21,3 +21,10 @@ results/
 all_results/
 
 capability_results/
+
+thesis_report/
+
+.venv_pdf/
+.vscode/
+
+texput.log
